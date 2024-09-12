@@ -56,4 +56,15 @@ def compute_statistics_on_output_ds(out_ds,qnts):
     out_ds['recall'] = compute_recall(out_ds.true_pos,out_ds.false_neg)
     out_ds['f1'] = compute_f1(out_ds.precision,out_ds.recall)
     
+    #confusion matrix using yhat threshold for yhat
+    out_ds['true_pos_self'] =  ((out_ds.o>=out_ds.o.quantile(qnts,dim='time')) & (out_ds.yhat>=out_ds.yhat.quantile(qnts,dim='time'))).where(np.isfinite(out_ds.o)).sum(dim='time')
+    out_ds['false_neg_self'] =  ((out_ds.o>=out_ds.o.quantile(qnts,dim='time')) & ((out_ds.yhat>=out_ds.yhat.quantile(qnts,dim='time'))==False)).where(np.isfinite(out_ds.o)).sum(dim='time')
+    out_ds['false_pos_self'] =  (((out_ds.o>=out_ds.o.quantile(qnts,dim='time'))==False) & (out_ds.yhat>=out_ds.yhat.quantile(qnts,dim='time'))).where(np.isfinite(out_ds.o)).sum(dim='time')
+    out_ds['true_neg_self'] =  (((out_ds.o>=out_ds.o.quantile(qnts,dim='time'))==False) & ((out_ds.yhat>=out_ds.yhat.quantile(qnts,dim='time'))==False)).where(np.isfinite(out_ds.o)).sum(dim='time')
+
+    #confusion matrix derivatives
+    out_ds['precision_self'] = compute_precision(out_ds.true_pos_self,out_ds.false_pos_self)
+    out_ds['recall_self'] = compute_recall(out_ds.true_pos_self,out_ds.false_neg_self)
+    out_ds['f1_self'] = compute_f1(out_ds.precision_self,out_ds.recall_self)
+    
     return out_ds
