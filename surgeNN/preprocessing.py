@@ -3,7 +3,8 @@ from sklearn.model_selection import train_test_split
 import xarray as xr
 from target_relevance import TargetRelevance #if starting with a clean environment, first, in terminal, do->'mamba install kdepy'
 import tensorflow as tf
-
+import itertools
+from scipy import signal 
 #splitting --->
 def split_predictand_and_predictors_chronological(predictand,predictors,split_fractions,n_steps):
     '''
@@ -57,34 +58,57 @@ def split_predictand_stratified(predictand,split_fractions,start_month,how):
     
     #!to-do!: implement something that automatically works out appropriate bins for custom split_fractions and takes into account missing values in the timeseries. For now, only accepting these exact fractions.
     if split_fractions == [0.5,0.25,0.25]:
-        l_bins = 4
+        bin_len = 4
     elif split_fractions == [0.6,0.2,0.2]:
-        l_bins = 5
+        bin_len = 5
     else:
         raise Exception('split fraction not yet implemented')
-    
+
     if how == 'amax':
-        amax = predictand.groupby(predictand.shifted_year).surge.max()
-    elif how == '99pct':
-        amax = predictand.groupby(predictand.shifted_year).surge.quantile(.99)
+        grouped_years = predictand.groupby(predictand.shifted_year).surge.max()
+    elif 'pct' in how:
+        grouped_years = predictand.groupby(predictand.shifted_year).surge.quantile(float(how.replace('pct',''))/100)
     else:
         raise Exception('stratification method not yet implemented')
-        
-    amax_sorted = amax.sort_values(ascending=False)
-    amax_bins = [amax_sorted[k:k+l_bins] for k in np.arange(0,len(amax_sorted),l_bins)] #bin sorted amax to divide over splits
-    
-    split_idx = [np.random.choice(np.arange(l_bins), size=len(this_bin), replace=False) for this_bin in amax_bins] #randomly assign years in each bin to splits
 
-    split_years = [[amax_bins[bin_idx].index.values[np.where((split_idx[bin_idx]==i))[0]][0] for bin_idx in np.arange(len(split_idx)) if i in split_idx[bin_idx]] for i in np.arange(l_bins)] #retrieve years to select for each split
+    ranked_years = grouped_years.sort_values(ascending=False)
+    binned_years = [ranked_years[k:k+bin_len] for k in np.arange(0,len(ranked_years),bin_len)] #bin sorted amax to divide over splits
+
+    years_train = []
+    years_val = []
+    years_test = []
+
+    for this_bin in binned_years:
+        if len(this_bin)==1:
+            pass
+        else:
+            bin_idx = np.arange(len(this_bin))
+            all_perms = [this_bin.iloc[np.array(k)] for k in list(itertools.permutations(bin_idx))] #get all permutations of this bin's years values
+
+            #minimize sum of absolute deviation from each split to the mean, select corresponding permutations
+            dev_from_mean = [np.nansum([np.abs(np.mean(k.values[0:-2])-k.mean()),np.abs(k.values[-2]-k.mean()),np.abs(k.values[-1]-k.mean())]) for k in all_perms]
+
+            i_minDev = np.where(dev_from_mean<=np.min(dev_from_mean))[0]
+
+            unq_perms,idx_unq_perms = np.unique(np.array(all_perms)[i_minDev,-2:],axis=0,return_index=True)
+            optimal_perms = [all_perms[k] for k in i_minDev[idx_unq_perms]]
+
+            #print(np.random.randint(0,len(optimal_perms)))
+            this_perm = optimal_perms[np.random.randint(0,len(optimal_perms))]
+
+        years_train.append(this_perm.index.values[0:-2])
+        years_val.append(this_perm.index.values[-2:-1])
+        years_test.append(this_perm.index.values[-1])
+
+    years_train = np.hstack(years_train)
+    years_val = np.hstack(years_val)   
+    years_test = np.hstack(years_test)
+
+    predictand_train = predictand[[k in years_train for k in predictand.shifted_year]]
+    predictand_val = predictand[[k in years_val for k in predictand.shifted_year]]
+    predictand_test = predictand[[k in years_test for k in predictand.shifted_year]]
     
-    #sort according to ascending length:
-    length_sorted_idx = np.argsort([len(k) for k in split_years])
-   
-    years_train = np.sort(np.hstack([np.array(split_years[k]) for k in length_sorted_idx[0:int(l_bins*split_fractions[0])]]))
-    years_test = np.sort(np.array(split_years[length_sorted_idx[-2]]))
-    years_val = np.sort(np.array(split_years[length_sorted_idx[-1]]))
-    
-    return predictand[[k in years_train for k in predictand.shifted_year]],predictand[[k in years_test for k in predictand.shifted_year]],predictand[[k in years_val for k in predictand.shifted_year]]
+    return predictand_train,predictand_test,predictand_val
 
 def split_predictand_and_predictors_stratified_years(predictand,predictors,split_fractions,n_steps,start_month,seed,how):
     '''
@@ -340,3 +364,36 @@ def get_denseloss_weights(data,alpha):
     weights[where_finite_data] = target_relevance.eval(data[where_finite_data]).flatten()
     
     return weights
+
+def deseasonalize_df_var(df_in,var,time_var):
+    '''subtract long-term monthly means from variable in dataframe '''
+    df = df_in.copy(deep=True)
+    monthly_means_at_timesteps = df.groupby(df[time_var].dt.month).transform('mean')[var].astype('float64') #contains mean of all timesteps in month for all years together at each timestep in that month
+    df[var] = df[var] - monthly_means_at_timesteps + np.mean(monthly_means_at_timesteps) #subtract without changing the overall mean of timeseries
+    return df
+
+def deseasonalize_da(da):
+    '''subtract long-term monthly means from variable in dataset'''
+    
+    deseasoned_da = da.groupby(da.time.dt.month) - da.groupby(da.time.dt.month).mean('time')
+    
+    deseasoned_da = deseasoned_da + (da.mean(dim='time') - deseasoned_da.mean(dim='time'))
+
+    return deseasoned_da
+
+def bandstop_filter_hourly_predictand(predictand,attenuation,f1,f2,order):
+    
+    def bandstop_filter(data,attenuation,f1,f2,order):
+        
+        sos = signal.cheby2(order, attenuation, [f1,f2], 'bandstop', output='sos',fs=3600)
+        
+        return signal.sosfilt(sos, data)
+    
+    
+    predictand_ffill = predictand.copy(deep=True)
+    predictand_ffill = predictand_ffill.set_index('date').resample('1h').fillna(method='ffill')
+    predictand_ffill = predictand_ffill.reset_index()[['surge','date','lon','lat']]
+    predictand_ffill['surge'] = bandstop_filter(predictand_ffill['surge'].values,attenuation,f1,f2,order)
+    predictand_ffill = predictand_ffill.loc[predictand_ffill['date'].isin(predictand['date'])]
+
+    return predictand_ffill
