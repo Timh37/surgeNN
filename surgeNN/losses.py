@@ -1,8 +1,11 @@
 import tensorflow as tf
 from tensorflow.keras import backend as K
 
-def squared_obs_weighted_mse(y_obs, y_pred):
-    return tf.reduce_mean((tf.math.sqrt(tf.math.square(y_obs)))*(tf.math.square(y_obs - y_pred)), axis=-1)  
+def obs_squared_weighted_mse(y_obs, y_pred):
+    return tf.reduce_mean(tf.math.square(y_obs)*tf.math.square(y_obs - y_pred), axis=-1)  
+
+def obs_weighted_mse(y_obs, y_pred):
+    return tf.reduce_mean(tf.math.abs(y_obs)*tf.math.square(y_obs - y_pred), axis=-1)  
 
 def minmax_weighted_mse(y_obs, y_pred):
     w = (y_obs - tf.reduce_min(y_obs) )/(tf.reduce_max(y_obs) - tf.reduce_min(y_obs))
