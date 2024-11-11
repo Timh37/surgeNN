@@ -14,7 +14,6 @@ def minmax_weighted_mse(y_obs, y_pred):
 def gevl(gamma):
     #based on: https://ieeexplore.ieee.org/abstract/document/9527101
     #call as follows: loss_fn = gevl(gamma)
-    
     gamma = tf.constant(gamma, dtype=tf.float64) #gumbel exponential
     
     def loss_fn(y_obs, y_pred):
