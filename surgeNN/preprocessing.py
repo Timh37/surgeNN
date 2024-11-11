@@ -5,7 +5,7 @@ from target_relevance import TargetRelevance #if starting with a clean environme
 import tensorflow as tf
 import itertools
 from scipy import signal 
-#splitting --->
+#subroutines to generate the train-validation-test splits --->
 def split_predictand_and_predictors_chronological(predictand,predictors,split_fractions,n_steps):
     '''
     Split predictand and predictors chronologically.
@@ -44,26 +44,26 @@ def split_predictand_and_predictors_chronological(predictand,predictors,split_fr
 
 def split_predictand_stratified(predictand,split_fractions,start_month,how):
     '''
-    Split predictand into years, stratify years according to their annual maximum and randomly assign years from each stratum to the splits.
+    Split predictand into years, stratify years according to the metric 'how', and randomly assign years from each stratum to the splits.
     
     Input:
         predictand: panda dataframe with predictand timeseries
         split_fractions: list of fractions in the order [train,test,val]
-        start_month: month at which to split the years
-        how: stratify on 'amax' or '99pct'
+        start_month: month at which to separate the years
+        how: stratify on 'amax', '[n]pct' with n an number, e.g., '99pct'
     Output:
         predictand splits
     '''
     predictand['shifted_year'] = [k.year + (np.floor_divide(k.month,start_month)>0).astype('int') for k in predictand.date] #split years from starting month until starting month next year
     
-    #!to-do!: implement something that automatically works out appropriate bins for custom split_fractions and takes into account missing values in the timeseries. For now, only accepting these exact fractions.
     if split_fractions == [0.5,0.25,0.25]:
         bin_len = 4
     elif split_fractions == [0.6,0.2,0.2]:
         bin_len = 5
     else:
         raise Exception('split fraction not yet implemented')
-
+        #!to-do!: implement something that automatically works out appropriate bins for custom split_fractions and takes into account missing values in the timeseries. For now, only accepting these exact fractions.
+        
     if how == 'amax':
         grouped_years = predictand.groupby(predictand.shifted_year).surge.max()
     elif 'pct' in how:
@@ -71,29 +71,29 @@ def split_predictand_stratified(predictand,split_fractions,start_month,how):
     else:
         raise Exception('stratification method not yet implemented')
 
-    ranked_years = grouped_years.sort_values(ascending=False)
-    binned_years = [ranked_years[k:k+bin_len] for k in np.arange(0,len(ranked_years),bin_len)] #bin sorted amax to divide over splits
+    ranked_years = grouped_years.sort_values(ascending=False) #sort years by metric
+    binned_years = [ranked_years[k:k+bin_len] for k in np.arange(0,len(ranked_years),bin_len)] #create stratas of sorted years according to bin length
 
     years_train = []
     years_val = []
     years_test = []
 
-    for this_bin in binned_years:
-        if len(this_bin)==1:
+    #determine which splits to assign years in each bin to:
+    for this_bin in binned_years: 
+        if len(this_bin)==1: #if only 1 year, there is no need to optimize the distribution
             pass
         else:
             bin_idx = np.arange(len(this_bin))
             all_perms = [this_bin.iloc[np.array(k)] for k in list(itertools.permutations(bin_idx))] #get all permutations of this bin's years values
 
-            #minimize sum of absolute deviation from each split to the mean, select corresponding permutations
+            #minimize sum of absolute deviation from each split to the mean, select corresponding permutations 
+            #(this avoids that all the highest or lowest years go to the train split)
             dev_from_mean = [np.nansum([np.abs(np.mean(k.values[0:-2])-k.mean()),np.abs(k.values[-2]-k.mean()),np.abs(k.values[-1]-k.mean())]) for k in all_perms]
 
             i_minDev = np.where(dev_from_mean<=np.min(dev_from_mean))[0]
 
             unq_perms,idx_unq_perms = np.unique(np.array(all_perms)[i_minDev,-2:],axis=0,return_index=True)
             optimal_perms = [all_perms[k] for k in i_minDev[idx_unq_perms]]
-
-            #print(np.random.randint(0,len(optimal_perms)))
             this_perm = optimal_perms[np.random.randint(0,len(optimal_perms))]
 
         years_train.append(this_perm.index.values[0:-2])
@@ -110,20 +110,21 @@ def split_predictand_stratified(predictand,split_fractions,start_month,how):
     
     return predictand_train,predictand_test,predictand_val
 
-def split_predictand_and_predictors_stratified_years(predictand,predictors,split_fractions,n_steps,start_month,seed,how):
+def split_predictand_and_predictors_with_stratified_years(predictand,predictors,split_fractions,n_steps,start_month,seed,how):
     '''
-    Split predictand and predictors into years, stratify years according to their annual maximum and randomly assign years from each stratum to the splits.
+    Split predictand and predictors into years, stratify years according to the metric 'how', and semi-randomly assign years from each stratum to the splits.
     
     Input:
         predictand: panda dataframe with predictand timeseries
+        predictors: xarray dataset with predictor timeseries
         split_fractions: list of fractions in the order [train,test,val]
-        start_month: month at which to split the years
+        start_month: month at which to separate the years
         seed: seed for random generator
-        how: stratify on 'amax' or '99pct'
+        how: stratify on 'amax', '[n]pct' with n an number, e.g., '99pct'
     Output:
         idx_train, idx_val, idx_test: split indices
-        x_train, x_val, x_test: predictor splits
-        y_train, y_val, y_test: predictand splits
+        x_train, x_val, x_test: splitted predictor data
+        y_train, y_val, y_test: splitted predictand data
     '''
     if np.sum(split_fractions)!=1:
         raise Exception('sum of split fractions must be 1')
@@ -136,7 +137,7 @@ def split_predictand_and_predictors_stratified_years(predictand,predictors,split
     x_train,x_val,x_test = [predictors.sel(time=k['date'].values) for k in [y_train,y_val,y_test]]
     y_train, y_val, y_test = [k.surge.values for k in [y_train,y_val,y_test]]
 
-    #set first n_steps observations in each split to NaN to avoid leakage
+    #set first n_steps observations in each split to NaN to avoid leakage between splits
     y_train[0:n_steps-1] = np.nan #predictors not available at t<0
     y_val[0:n_steps-1] = np.nan #to avoid leakage
     y_test[0:n_steps-1] = np.nan #to avoid leakage
@@ -191,7 +192,7 @@ def normalize_predictand_splits(y_train,y_val,y_test,output_transform=False):
     y_train_min = np.nanmin(y_train) 
     y_train_max = np.nanmax(y_train)
                
-    y_train,y_val,y_test = [(k - y_train_min)/(y_train_max-y_train_min) for k in [y_train,y_val,y_test]]
+    y_train,y_val,y_test = [(k - y_train_min)/(y_train_max-y_train_min) for k in [y_train,y_val,y_test]] #note that val & test splits are normalized using train transform
     
     if output_transform == False:
         return y_train,y_val,y_test
@@ -210,7 +211,7 @@ def normalize_predictor_splits(x_train,x_val,x_test,output_transform=False):
     x_train_min = x_train.min(dim='time') #skips nan by default
     x_train_max = x_train.max(dim='time')
 
-    x_train,x_val,x_test = [(k - x_train_min)/(x_train_max-x_train_min) for k in [x_train,x_val,x_test]]
+    x_train,x_val,x_test = [(k - x_train_min)/(x_train_max-x_train_min) for k in [x_train,x_val,x_test]] #note that val & test splits are normalized using train transform
     
     if output_transform == False:
         return x_train,x_val,x_test
@@ -229,7 +230,7 @@ def standardize_predictand_splits(y_train,y_val,y_test,output_transform=False):
     y_train_mean = np.nanmean(y_train) 
     y_train_sd = np.nanstd(y_train,ddof=0)
                
-    y_train, y_val, y_test = [(k - y_train_mean)/y_train_sd for k in [y_train,y_val,y_test]]
+    y_train, y_val, y_test = [(k - y_train_mean)/y_train_sd for k in [y_train,y_val,y_test]] #note that val & test splits are standardized using train transform
 
     if output_transform == False:
         return y_train,y_val,y_test
@@ -248,7 +249,7 @@ def standardize_predictor_splits(x_train,x_val,x_test,output_transform=False):
     x_train_mean = x_train.mean(dim='time') #skips nan by default
     x_train_sd = x_train.std(dim='time',ddof=0) #skips nan by default
     
-    x_train, x_val, x_test = [(k - x_train_mean)/x_train_sd for k in [x_train,x_val,x_test]]
+    x_train, x_val, x_test = [(k - x_train_mean)/x_train_sd for k in [x_train,x_val,x_test]] #note that val & test splits are standardized using train transform
     
     if output_transform == False:
         return x_train,x_val,x_test
@@ -258,10 +259,10 @@ def standardize_predictor_splits(x_train,x_val,x_test,output_transform=False):
 def standardize_timeseries(timeseries):
     return ( timeseries - np.nanmean(timeseries) ) / np.nanstd( timeseries, ddof=0)
 
-#preparing input to train models --->
+#format input in the right way to train the neural networks --->
 def generate_windowed_filtered_np_input(x,y,n_steps,w=None):
     '''
-    Generate numpy arrays of windowed nan-filtered input data
+    Generate numpy arrays of windowed nan-filtered input data (same as below but using numpy in memory arrays instead of tensorflow datasets for efficiency)
     Input:
         x: predictors
         y: predictands
@@ -322,7 +323,7 @@ def generate_batched_windowed_filtered_tf_input(x,y,n_steps,batch_size,weights=N
 
 def batched_windowed_dataset_from_dataset(dataset, n_steps, batch_size):
     '''
-    generate windows from dataset & split into batches
+    generate windows (expand n_steps preceding timesteps along new dimension) from tensorflow dataset & split into batches
     Input:
         dataset: tensorflow dataset
         n_steps: number of timesteps to use predictors at
@@ -376,7 +377,6 @@ def deseasonalize_da(da):
     '''subtract long-term monthly means from variable in dataset'''
     
     deseasoned_da = da.groupby(da.time.dt.month) - da.groupby(da.time.dt.month).mean('time')
-    
     deseasoned_da = deseasoned_da + (da.mean(dim='time') - deseasoned_da.mean(dim='time'))
 
     return deseasoned_da
@@ -388,7 +388,6 @@ def bandstop_filter_hourly_predictand(predictand,attenuation,f1,f2,order):
         sos = signal.cheby2(order, attenuation, [f1,f2], 'bandstop', output='sos',fs=3600)
         
         return signal.sosfilt(sos, data)
-    
     
     predictand_ffill = predictand.copy(deep=True)
     predictand_ffill = predictand_ffill.set_index('date').resample('1h').fillna(method='ffill')
