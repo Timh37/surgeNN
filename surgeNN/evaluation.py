@@ -10,7 +10,6 @@ def plot_loss_evolution(model_history):
     plt.plot(model_history.history['val_loss'], label = 'val_loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    #plt.ylim([0.5, 1])
     plt.legend(loc='lower right')
     
     return f
@@ -30,41 +29,40 @@ def compute_recall(true_pos,false_neg):
 def compute_f1(precision,recall):
     return 2*recall*precision/(recall+precision)
 
-def compute_statistics_on_output_ds(out_ds,qnts):
+def add_error_metrics_to_prediction_ds(prediction_ds,qnts,max_numT_between_isolated_extremes=None):
     '''
     Args:
-        out_ds: xarray dataset with observations 'o' and predictions 'yhat' as function of 'time'.
-        qnts: threshold quantiles above which to define extremes
-
+        prediction_ds: xarray dataset with observations 'o' and predictions 'yhat' as function of 'time'.
+        qnts: list of threshold quantiles above which to define extremes
+        max_numT_between_isolated_extremes: integer-threshold to drop extremes that are isolated by more than max_numT_between_isolated_extremes time-steps
+    
     Returns:
-        out_ds with error statistics added
+        prediction_ds with error statistics added
     '''
-    out_ds['r_bulk'] = xr.corr(out_ds.o,out_ds.yhat,dim='time')
-    out_ds['rmse_bulk'] = np.sqrt( ((out_ds.o-out_ds.yhat)**2 ).mean(dim='time'))
+    prediction_ds['r_bulk'] = xr.corr(prediction_ds.o,prediction_ds.yhat,dim='time') #correlation of all predictions and observations
+    prediction_ds['rmse_bulk'] = np.sqrt( ((prediction_ds.o-prediction_ds.yhat)**2 ).mean(dim='time')) #rmse of all predictions and observations
 
-    out_ds['r_extremes'] = xr.corr(out_ds.o.where(out_ds.o>=out_ds.o.quantile(qnts,dim='time')),out_ds.yhat.where(out_ds.o>=out_ds.o.quantile(qnts,dim='time')),dim='time')
-    out_ds['rmse_extremes'] = np.sqrt((( out_ds.o.where(out_ds.o>=out_ds.o.quantile(qnts,dim='time'))-out_ds.yhat.where(out_ds.o>=out_ds.o.quantile(qnts,dim='time')))**2 ).mean(dim='time'))
+    where_observed_peaks_ = (prediction_ds.o>=prediction_ds.o.quantile(qnts,dim='time')) #find exceedances
+    
+    if max_numT_between_isolated_extremes: #possibly filter out isolated extremes using max_numT_between_isolated_extremes
+        where_observed_peaks = ((where_observed_peaks_) & (where_observed_peaks_.rolling(time=1+2*int(max_numT_between_isolated_extremes),center='True').sum()>1))
+    else:
+        where_observed_peaks = where_observed_peaks_
+        
+    #error metrics where obs are extreme:    
+    prediction_ds['r_extremes'] = xr.corr(prediction_ds.o.where(where_observed_peaks),
+                                          prediction_ds.yhat.where(where_observed_peaks),dim='time') 
+    prediction_ds['rmse_extremes'] = np.sqrt((( prediction_ds.o.where(where_observed_peaks)-prediction_ds.yhat.where(where_observed_peaks))**2 ).mean(dim='time'))
 
     #confusion matrix based on observational threshold
-    out_ds['true_pos'] =  ((out_ds.o>=out_ds.o.quantile(qnts,dim='time')) & (out_ds.yhat>=out_ds.o.quantile(qnts,dim='time'))).where(np.isfinite(out_ds.o)).sum(dim='time')
-    out_ds['false_neg'] =  ((out_ds.o>=out_ds.o.quantile(qnts,dim='time')) & ((out_ds.yhat>=out_ds.o.quantile(qnts,dim='time'))==False)).where(np.isfinite(out_ds.o)).sum(dim='time')
-    out_ds['false_pos'] =  (((out_ds.o>=out_ds.o.quantile(qnts,dim='time'))==False) & (out_ds.yhat>=out_ds.o.quantile(qnts,dim='time'))).where(np.isfinite(out_ds.o)).sum(dim='time')
-    out_ds['true_neg'] =  (((out_ds.o>=out_ds.o.quantile(qnts,dim='time'))==False) & ((out_ds.yhat>=out_ds.o.quantile(qnts,dim='time'))==False)).where(np.isfinite(out_ds.o)).sum(dim='time')
+    prediction_ds['true_pos'] =  ((where_observed_peaks) & (prediction_ds.yhat>=prediction_ds.o.quantile(qnts,dim='time'))).where(np.isfinite(prediction_ds.o)).sum(dim='time')
+    prediction_ds['false_neg'] =  ((where_observed_peaks) & ((prediction_ds.yhat>=prediction_ds.o.quantile(qnts,dim='time'))==False)).where(np.isfinite(prediction_ds.o)).sum(dim='time')
+    prediction_ds['false_pos'] =  ((where_observed_peaks==False) & (prediction_ds.yhat>=prediction_ds.o.quantile(qnts,dim='time'))).where(np.isfinite(prediction_ds.o)).sum(dim='time')
+    prediction_ds['true_neg'] =  ((where_observed_peaks==False) & ((prediction_ds.yhat>=prediction_ds.o.quantile(qnts,dim='time'))==False)).where(np.isfinite(prediction_ds.o)).sum(dim='time')
 
     #confusion matrix derivatives
-    out_ds['precision'] = compute_precision(out_ds.true_pos,out_ds.false_pos)
-    out_ds['recall'] = compute_recall(out_ds.true_pos,out_ds.false_neg)
-    out_ds['f1'] = compute_f1(out_ds.precision,out_ds.recall)
-    
-    #confusion matrix using yhat threshold for yhat
-    out_ds['true_pos_self'] =  ((out_ds.o>=out_ds.o.quantile(qnts,dim='time')) & (out_ds.yhat>=out_ds.yhat.quantile(qnts,dim='time'))).where(np.isfinite(out_ds.o)).sum(dim='time')
-    out_ds['false_neg_self'] =  ((out_ds.o>=out_ds.o.quantile(qnts,dim='time')) & ((out_ds.yhat>=out_ds.yhat.quantile(qnts,dim='time'))==False)).where(np.isfinite(out_ds.o)).sum(dim='time')
-    out_ds['false_pos_self'] =  (((out_ds.o>=out_ds.o.quantile(qnts,dim='time'))==False) & (out_ds.yhat>=out_ds.yhat.quantile(qnts,dim='time'))).where(np.isfinite(out_ds.o)).sum(dim='time')
-    out_ds['true_neg_self'] =  (((out_ds.o>=out_ds.o.quantile(qnts,dim='time'))==False) & ((out_ds.yhat>=out_ds.yhat.quantile(qnts,dim='time'))==False)).where(np.isfinite(out_ds.o)).sum(dim='time')
+    prediction_ds['precision'] = compute_precision(prediction_ds.true_pos,prediction_ds.false_pos)
+    prediction_ds['recall'] = compute_recall(prediction_ds.true_pos,prediction_ds.false_neg)
+    prediction_ds['f1'] = compute_f1(prediction_ds.precision,prediction_ds.recall)
 
-    #confusion matrix derivatives
-    out_ds['precision_self'] = compute_precision(out_ds.true_pos_self,out_ds.false_pos_self)
-    out_ds['recall_self'] = compute_recall(out_ds.true_pos_self,out_ds.false_neg_self)
-    out_ds['f1_self'] = compute_f1(out_ds.precision_self,out_ds.recall_self)
-    
-    return out_ds
+    return prediction_ds
