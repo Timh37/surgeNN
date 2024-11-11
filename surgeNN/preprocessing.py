@@ -1,10 +1,10 @@
 import numpy as np
 from sklearn.model_selection import train_test_split
 import xarray as xr
-from target_relevance import TargetRelevance #if starting with a clean environment, first, in terminal, do->'mamba install kdepy'
 import tensorflow as tf
 import itertools
 from scipy import signal 
+
 #subroutines to generate the train-validation-test splits --->
 def split_predictand_and_predictors_chronological(predictand,predictors,split_fractions,n_steps):
     '''
@@ -343,28 +343,6 @@ def stack_predictors_for_lstm(predictors,var_names):
 def stack_predictors_for_convlstm(predictors,var_names):
     ''' stack predictors to prepare for convlstm input'''
     return np.stack([predictors[k].values for k in var_names],axis=-1) #stack variables
-
-#other --->
-def get_denseloss_weights(data,alpha):
-    '''obtain sample weights on KDE following https://link.springer.com/article/10.1007/s10994-021-06023-5
-    
-    requires 'kdepy' package
-    
-    Input:
-        data: samples of observations to assign weights to
-        alpha: scaling factor for those weights
-        
-    Output
-        weights: sample weights
-    '''
-    where_finite_data = np.isfinite(data)
-    
-    target_relevance = TargetRelevance(data[where_finite_data], alpha=alpha) #generate loss weights based on finite values in data
-    
-    weights = np.nan * np.zeros(len(data)) #initialize weights with the same length as data
-    weights[where_finite_data] = target_relevance.eval(data[where_finite_data]).flatten()
-    
-    return weights
 
 def deseasonalize_df_var(df_in,var,time_var):
     '''subtract long-term monthly means from variable in dataframe '''
