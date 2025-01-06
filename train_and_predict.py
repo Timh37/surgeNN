@@ -23,11 +23,11 @@ class GC_Callback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         gc.collect()
         
-def train_and_predict(loss_function,loss_function_,possible_params,
+def train_and_predict(loss_function,loss_function_,possible_params,store_model,
                       split_fractions,split_method,split_start_month,split_seed,
                       n_runs,n_iterations,n_epochs,patience,
                      input_dir,output_dir,
-                     tgs,var_names,n_cells,temp_freq,architecture):
+                     tgs,var_names,n_degrees,temp_freq,architecture):
     tg_lons = []
     tg_lats = []
     
@@ -39,9 +39,17 @@ def train_and_predict(loss_function,loss_function_,possible_params,
     for tg in tqdm(tgs): #loop over TGs
         #load & process predictors
         #predictors = load_predictors('/home/jovyan/test_surge_models/input/predictors_'+str(temp_freq)+'hourly',tg,n_cells) #open predictor xarray dataset
-        predictors = load_predictors('gs://leap-persistent/timh37/era5_predictors/'+str(temp_freq)+'hourly',tg,n_cells)
+        predictors = load_predictors('gs://leap-persistent/timh37/era5_predictors/'+str(temp_freq)+'hourly',tg)
         predictors = predictors.sel(time=slice('1979','2017')) #2018 because of end year GTSM simulations that are used as benchmark
+        
+        if n_degrees > 5:
+            print('Cannot use more grid cells than provided in input files, so setting n_degrees to 5 instead of '+str(n_degrees))
+            n_degrees = 5
+        n_cells = int(n_degrees * 4) #era5 resolution = 0.25 degree
 
+        predictors = predictors.isel(lon_around_tg = np.arange(0+int((20-n_cells)/2),20-int((20-n_cells)/2)),
+                                     lat_around_tg = np.arange(0+int((20-n_cells)/2),20-int((20-n_cells)/2))) #standard is 20 by 20, reduce if n_cells<5
+    
         if 'w' in var_names and 'w' not in predictors.variables:
             predictors['w'] == np.sqrt((predictors.u10**2+predictors.v10**2))
 
@@ -108,13 +116,13 @@ def train_and_predict(loss_function,loss_function_,possible_params,
                     model = build_ConvLSTM2D_with_channels(this_n_convlstm, this_n_dense,
                                                            (np.ones(this_n_convlstm)*this_n_convlstm_units).astype(int), 
                                               (np.ones(this_n_dense)*this_n_dense_units).astype(int),
-                                              this_n_steps,int(n_cells/0.25),int(n_cells/0.25),len(var_names), 'convlstm0',
+                                              this_n_steps,n_cells,n_cells,len(var_names), 'convlstm0',
                                                            this_dropout, this_lr, loss_function_,l2=this_l2)
                 elif architecture == 'lstm':
                     model = build_LSTM_stacked(this_n_convlstm, this_n_dense, 
                                       (np.ones(this_n_convlstm)*this_n_convlstm_units).astype(int), 
                                       (np.ones(this_n_dense)*this_n_dense_units).astype(int), 
-                                       this_n_steps,int(n_cells/0.25),int(n_cells/0.25),len(var_names), 'lstm0',
+                                       this_n_steps,n_cells,n_cells,len(var_names), 'lstm0',
                                        this_dropout, this_lr, loss_function_,l2=this_l2) #loss_function
 
                 #train model:
@@ -170,7 +178,7 @@ def train_and_predict(loss_function,loss_function_,possible_params,
 
             #concatenate across runs & compute statistics
             out_ds = xr.concat(tg_datasets,dim='i',coords='different')
-            out_ds = add_error_metrics_to_prediction_ds(out_ds,[.95,.98,.99,.995])
+            out_ds = add_error_metrics_to_prediction_ds(out_ds,[.95,.98,.99,.995]) #optional third argument 'max_numT_between_isolated_extremes' to exclude extremes isolated by 12h or more from another extreme from evaluation (to avoid including extremes mainly due to semi-diurnal tides, see manuscript for more explanation)
 
             out_ds = out_ds.assign_coords(tg = np.array([tg]))
             out_ds = out_ds.assign_coords(lon = ('tg',np.array([predictand['lon'].values[0]])))
@@ -185,7 +193,7 @@ def train_and_predict(loss_function,loss_function_,possible_params,
             out_ds.attrs['split_method'] = split_method+'_'+str(split_start_month)+'_'+str(split_seed)
             
             my_path = os.path.join(output_dir,'performance',architecture)
-            my_fn = architecture+'_'+str(temp_freq)+'h_'+tg.replace('.csv','')+'_'+loss_function+'_hp1_it'
+            my_fn = architecture+'_'+str(temp_freq)+'h_'+tg.replace('.csv','')+'_'+loss_function+'_hp1_ndeg'+str(n_degrees)+'_it'
             
             out_ds.to_netcdf(os.path.join(my_path,my_fn+str(len(fnmatch.filter(os.listdir(my_path),my_fn+'*')))+'.nc'),mode='w')
     return out_ds
@@ -200,23 +208,25 @@ if __name__ == "__main__":
     default_tgs = ['den_helder-denhdr-nld-rws.csv'] #set default values
     default_architecture = 'lstm'
     default_alpha = np.array([0,1,3,5]).astype('int')
-
+    default_n_degrees = 5
+    
     arguments = sys.argv
-    if len(arguments)==4: #if specifying tgs, architecture & alpha values from commandline
+    if len(arguments)==5: #if specifying tgs, architecture & alpha values from commandline
         tgs = [arguments[1]] #tg to process
         architecture = arguments[2] #architecture to use
         dl_alpha = eval(arguments[3]) #density-based weights tuning parameter
+        n_degrees = eval(arguments[4])
     else:
         tgs = default_tgs
         architecture = default_architecture
         dl_alpha = default_alpha
+        n_degrees = default_n_degrees
     
     print('Training & predicting for tide gauge: '+str(tgs))
     print('Architecture: '+architecture+'; dl_alpha: ' + str(dl_alpha))
     # --- 
     
     temp_freq = 3 # [hours] temporal frequency to use
-    n_cells   = 5 #n x n grid cells around tide gauge of predictor data to use
 
     var_names = ['msl','u10','v10','w'] #variables to use
 
@@ -230,7 +240,7 @@ if __name__ == "__main__":
     n_epochs = 100 #how many training epochs
     patience = 10 #early stopping patience
 
-    store_model = 1
+    store_model = 1 #whether to store the tensorflow model
     
     split_fractions = [.6,.2,.2] #train, test, val
     split_method = '99pct'
@@ -252,8 +262,8 @@ if __name__ == "__main__":
     possible_params = [batch_size, n_steps, n_convlstm, n_convlstm_units,
                     n_dense, n_dense_units, dropout, lrs, l1s, dl_alpha]
     
-    out_ds = train_and_predict(loss_function,loss_function,possible_params, #execute
+    out_ds = train_and_predict(loss_function,loss_function,possible_params,store_model, #execute
                       split_fractions,split_method,split_start_month,split_seed,
                       n_runs,n_iterations,n_epochs,patience,
                      input_dir,output_dir,
-                     tgs,var_names,n_cells,temp_freq,architecture)
+                     tgs,var_names,n_degrees,temp_freq,architecture)
