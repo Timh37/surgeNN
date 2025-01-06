@@ -29,12 +29,12 @@ def compute_recall(true_pos,false_neg):
 def compute_f1(precision,recall):
     return 2*recall*precision/(recall+precision)
 
-def add_error_metrics_to_prediction_ds(prediction_ds,qnts,max_numT_between_isolated_extremes=None):
+def add_error_metrics_to_prediction_ds(prediction_ds,qnts,max_timesteps_between_extremes=None):
     '''
     Args:
         prediction_ds: xarray dataset with observations 'o' and predictions 'yhat' as function of 'time'.
         qnts: list of threshold quantiles above which to define extremes
-        max_numT_between_isolated_extremes: integer-threshold to drop extremes that are isolated by more than max_numT_between_isolated_extremes time-steps
+        max_timesteps_between_extremes: integer-threshold to drop extremes that are isolated by more than 'max_timesteps_between_extremes time-steps, no threshold used if not specified
     
     Returns:
         prediction_ds with error statistics added
@@ -44,10 +44,17 @@ def add_error_metrics_to_prediction_ds(prediction_ds,qnts,max_numT_between_isola
 
     where_observed_peaks_ = (prediction_ds.o>=prediction_ds.o.quantile(qnts,dim='time')) #find exceedances
     
-    if max_numT_between_isolated_extremes: #possibly filter out isolated extremes using max_numT_between_isolated_extremes
-        where_observed_peaks = ((where_observed_peaks_) & (where_observed_peaks_.rolling(time=1+2*int(max_numT_between_isolated_extremes),center='True').sum()>1))
+    if max_timesteps_between_extremes: #possibly filter out isolated extremes using max_timesteps_between_extremes
+        if isinstance(max_timesteps_between_extremes,int) == False:
+            raise Exception('If specified, max_timesteps_between_extremes must be an integer.')
+        if max_timesteps_between_extremes<1:
+            raise Exception('If specified, max_timesteps_between_extremes must be higher than 0.')
+            
+        where_observed_peaks = ((where_observed_peaks_) & (where_observed_peaks_.rolling(time=1+2*int(max_timesteps_between_extremes),center='True').sum()>1))
+        max_distance = int(max_timesteps_between_extremes)
     else:
         where_observed_peaks = where_observed_peaks_
+        max_distance = -1
         
     #error metrics where obs are extreme:    
     prediction_ds['r_extremes'] = xr.corr(prediction_ds.o.where(where_observed_peaks),
@@ -65,4 +72,9 @@ def add_error_metrics_to_prediction_ds(prediction_ds,qnts,max_numT_between_isola
     prediction_ds['recall'] = compute_recall(prediction_ds.true_pos,prediction_ds.false_neg)
     prediction_ds['f1'] = compute_f1(prediction_ds.precision,prediction_ds.recall)
 
+    for metric in ['r_extremes','rmse_extremes','true_pos','false_neg','false_pos','true_neg','precision','recall','f1']:
+        prediction_ds[metric] = prediction_ds[metric].expand_dims(dim='max_timesteps_between_extremes') #add additional dimension for max time distance used between 
+    
+    prediction_ds['max_timesteps_between_extremes'] = [max_distance]
+    
     return prediction_ds
