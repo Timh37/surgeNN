@@ -1,6 +1,5 @@
-*-checkpoint.ipynb
 __pycache__
 old/
 .DS_Store
 *.pyc
-*-checkpoint.py
+*-checkpoint*
