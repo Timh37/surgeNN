@@ -178,7 +178,7 @@ def train_and_predict(loss_function,loss_function_,possible_params,store_model,
 
             #concatenate across runs & compute statistics
             out_ds = xr.concat(tg_datasets,dim='i',coords='different')
-            out_ds = add_error_metrics_to_prediction_ds(out_ds,[.95,.98,.99,.995]) #optional third argument 'max_numT_between_isolated_extremes' to exclude extremes isolated by 12h or more from another extreme from evaluation (to avoid including extremes mainly due to semi-diurnal tides, see manuscript for more explanation)
+            out_ds = add_error_metrics_to_prediction_ds(out_ds,[.95,.98,.99,.995],3) #optional third argument 'max_numT_between_isolated_extremes' to exclude extremes isolated by more than n timesteps from another extreme from evaluation (to avoid including extremes mainly due to semi-diurnal tides, see manuscript for more explanation)
 
             out_ds = out_ds.assign_coords(tg = np.array([tg]))
             out_ds = out_ds.assign_coords(lon = ('tg',np.array([predictand['lon'].values[0]])))
@@ -233,7 +233,7 @@ if __name__ == "__main__":
     loss_function = 'mse' # default tensorflow loss function string or string of custom loss function of surgeNN.losses (e.g., 'gevl({gamma})')
     
     input_dir  = '/home/jovyan/test_surge_models/input/' #directory with predictor & predictand data
-    output_dir = '/home/jovyan/test_surge_models/results/nn_tests/'#performance/',architecture+'/') #where to store the results
+    output_dir = '/home/jovyan/test_surge_models/results/nns/'#performance/',architecture+'/') #where to store the results
 
     n_runs = 24 #how many iterations with different hyperparameter combinations to run
     n_iterations = 1
