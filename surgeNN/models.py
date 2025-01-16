@@ -6,8 +6,6 @@ Created on Fri Jan 19 16:16:55 2024
 @author: timhermans
 """
 import tensorflow as tf
-from tensorflow.keras.layers import Layer
-from tensorflow.keras import backend as K
 import keras
 from keras import regularizers
 from keras import layers
@@ -387,6 +385,8 @@ def build_Conv2D_then_LSTM_with_channels(n_conv,n_lstm, n_dense,
     return model
 
 '''#from elsewhere, not currently using this:
+from tensorflow.keras.layers import Layer
+from tensorflow.keras import backend as K
 class Attention(Layer): 
     def __init__(self, return_sequences=True):
         self.return_sequences = return_sequences

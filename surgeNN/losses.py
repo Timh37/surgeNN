@@ -1,5 +1,4 @@
 import tensorflow as tf
-from tensorflow.keras import backend as K
 #various tensorflow loss functions
 
 def obs_squared_weighted_mse(y_obs, y_pred):
