@@ -1,17 +1,23 @@
 import tensorflow as tf
 from tensorflow.keras import backend as K
+#various tensorflow loss functions
 
-def squared_obs_weighted_mse(y_obs, y_pred):
-    return tf.reduce_mean((tf.math.sqrt(tf.math.square(y_obs)))*(tf.math.square(y_obs - y_pred)), axis=-1)  
+def obs_squared_weighted_mse(y_obs, y_pred):
+    #MSE multiplied with squared observed value
+    return tf.reduce_mean(tf.math.square(y_obs)*tf.math.square(y_obs - y_pred), axis=-1)  
+
+def obs_weighted_mse(y_obs, y_pred):
+    #MSE multiplied with absolute observed value
+    return tf.reduce_mean(tf.math.abs(y_obs)*tf.math.square(y_obs - y_pred), axis=-1)  
 
 def minmax_weighted_mse(y_obs, y_pred):
+    #MSE multiplied with weight depending on where in min-max range of observations
     w = (y_obs - tf.reduce_min(y_obs) )/(tf.reduce_max(y_obs) - tf.reduce_min(y_obs))
     return tf.reduce_mean(w*(tf.math.square(y_obs - y_pred)), axis=-1)  
 
 def gevl(gamma):
     #based on: https://ieeexplore.ieee.org/abstract/document/9527101
     #call as follows: loss_fn = gevl(gamma)
-    
     gamma = tf.constant(gamma, dtype=tf.float64) #gumbel exponential
     
     def loss_fn(y_obs, y_pred):

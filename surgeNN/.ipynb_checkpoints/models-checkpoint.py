@@ -23,7 +23,6 @@ import xarray as xr
 def build_LSTM_stacked(n_lstm, n_dense, n_lstm_units, n_neurons,
                      n_timesteps,n_lats,n_lons,n_predictor_variables, 
                      model_name, dropout_rate, lr, loss_function,l2=0.01):
-    
     '''build an LSTM network where predictor variables are inputted as channels
     
     Input:
@@ -40,16 +39,14 @@ def build_LSTM_stacked(n_lstm, n_dense, n_lstm_units, n_neurons,
     Output:
         compiled tensorflow model
     '''
-    
     input_shape = (n_timesteps,n_lats*n_lons*n_predictor_variables) #channels last
     
     lstm_input = keras.Input(shape=input_shape)
     x = lstm_input
     for l in np.arange(n_lstm-1):
-        x = layers.LSTM(n_lstm_units[l], return_sequences=True)(x)
+        x = layers.LSTM(n_lstm_units[l], return_sequences=True)(x)  
+    x = layers.LSTM(n_lstm_units[n_lstm-1], return_sequences=False)(x)  
     
-    x = layers.LSTM(n_lstm_units[n_lstm-1], return_sequences=False)(x)
-        
     #add densely connected layers:
     for l in np.arange(n_dense-1):
         x = layers.Dense(n_neurons[l],activation='relu',activity_regularizer=regularizers.l2(l2))(x)
@@ -61,13 +58,11 @@ def build_LSTM_stacked(n_lstm, n_dense, n_lstm_units, n_neurons,
 
     model = keras.Model(inputs=lstm_input, outputs=output,name=model_name)  #construct the Keras model   
     model.compile(optimizer=keras.optimizers.Adam(learning_rate=lr),loss=loss_function,weighted_metrics=[]) #compile the model
-    
     return model
 
 def build_LSTM_per_variable(n_lstm, n_dense, n_lstm_units, n_neurons,
                      n_timesteps,n_lats,n_lons,n_predictor_variables, 
                      model_name, dropout_rate, lr, loss_function,l2=0.01):
-    
     '''build an LSTM network where predictor variables are fed to the vlstm layers separately and then merged
     
     Input:
@@ -84,7 +79,6 @@ def build_LSTM_per_variable(n_lstm, n_dense, n_lstm_units, n_neurons,
     Output:
         compiled tensorflow model
     '''
-    
     input_shape = (n_timesteps,n_lats*n_lons) #channels last
     
     inputs = []
@@ -95,7 +89,6 @@ def build_LSTM_per_variable(n_lstm, n_dense, n_lstm_units, n_neurons,
         x = lstm_input
         for l in np.arange(n_lstm-1):
             x = layers.LSTM(n_lstm_units[l], return_sequences=True)(x)        
-        
         x = layers.LSTM(n_lstm_units[n_lstm-1], return_sequences=False)(x)
         
         lstmd_vars.append(x)
@@ -153,7 +146,7 @@ def build_ConvLSTM2D_with_channels(n_convlstm, n_dense, n_kernels, n_neurons,
     x = layers.ConvLSTM2D(n_kernels[n_convlstm-1], kernel_size=(3, 3), return_sequences=False, padding='same',activation='relu')(x)        
     x = layers.BatchNormalization()(x)
     x = layers.MaxPooling2D(pool_size=(2,2),padding="same")(x)        
-    x = SpatialDropout2D(dropout_rate)(x)
+    #x = SpatialDropout2D(dropout_rate)(x)
     x = layers.Flatten()(x)
         
     #add densely connected layers:
@@ -205,7 +198,7 @@ def build_ConvLSTM2D_per_variable(n_convlstm, n_dense, n_kernels, n_neurons,
         x = layers.ConvLSTM2D(n_kernels[n_convlstm-1], kernel_size=(3, 3), return_sequences=False, padding='same',activation='relu')(x)        
         x = layers.BatchNormalization()(x)
         x = layers.MaxPooling2D(pool_size=(2,2),padding="same")(x)        
-        x = SpatialDropout2D(dropout_rate)(x)
+        #x = SpatialDropout2D(dropout_rate)(x)
         x = layers.Flatten()(x)
         
         convoluted_vars.append(x)
@@ -262,7 +255,7 @@ def build_Conv2D_with_channels(n_conv, n_dense, n_kernels, n_neurons,
             x = layers.BatchNormalization()(x)
             x = layers.MaxPooling2D(pool_size=(2, 2), padding="same")(x)
         
-        x = SpatialDropout2D(dropout_rate)(x)
+        #x = SpatialDropout2D(dropout_rate)(x)
         x = layers.Flatten()(x)
         convoluted_steps.append(x)
         
@@ -311,7 +304,7 @@ def build_Conv3D_with_channels(n_conv, n_dense, n_kernels, n_neurons,
         x = layers.BatchNormalization()(x)
         x = layers.MaxPooling3D(pool_size=(2, 2,2), padding="same")(x)
 
-    x = SpatialDropout3D(dropout_rate)(x)
+    #x = SpatialDropout3D(dropout_rate)(x)
     x = layers.Flatten()(x)
         
     #add densely connected layers:
@@ -366,7 +359,7 @@ def build_Conv2D_then_LSTM_with_channels(n_conv,n_lstm, n_dense,
             x = layers.BatchNormalization()(x)
             x = layers.MaxPooling2D(pool_size=(2, 2), padding="same")(x)
         
-        x = SpatialDropout2D(dropout_rate)(x)
+        #x = SpatialDropout2D(dropout_rate)(x)
         x = layers.Flatten()(x)
         
         convoluted_steps.append(x)
@@ -417,3 +410,46 @@ class Attention(Layer):
             return output
         return K.sum(output, axis=1)
 ''' 
+#<----
+
+#MLR based on Tadesse et al. ---->
+def train_gssr_mlr(predictors,predictand):
+    '''training step, estimate mlr coefficients'''
+    
+    pca = PCA(.95) #find pcs explaining at least 95% of the variance
+    pca.fit(predictors)
+    X_pca = pca.transform(predictors)
+
+    X_pca = sm.add_constant(X_pca) #add intercept for the regression
+    est = sm.OLS(predictand, X_pca).fit() 
+    
+    return est.params,pca.components_
+
+def predict_gssr_mlr(predictors,mlr_coefs,training_components,grid_size_around_tgs,predictor_vars,n_steps):
+    pca = PCA(len(mlr_coefs[np.isfinite(mlr_coefs)])-1) #get same number of pcs as used for regression coefficient estimation
+    pca.fit(predictors)
+    X_pca = pca.transform(predictors)
+
+    #sign check of the components
+    prediction_components = pca.components_
+
+    #find pressure indices in predictor matrix
+    n_gridcells = grid_size_around_tgs**2
+    
+    p_idx = []
+    for k in np.arange(n_steps):
+        p_idx.append(np.arange(0,n_gridcells)+k*len(predictor_vars)*n_gridcells)
+    p_idx = np.hstack(p_idx)
+
+    #compute rmses of pressure indices
+    rmses = np.sqrt(np.mean((prediction_components[:,p_idx]-training_components[:,p_idx])**2,axis=-1))
+    rmses_flipped = np.sqrt(np.mean((prediction_components[:,p_idx]--training_components[:,p_idx])**2,axis=-1))
+
+    s = (rmses<rmses_flipped).astype('int') #flip pcs if rmse of flipped pc is lower
+    s[s==0]=-1
+    X_pca = X_pca * s
+
+
+    prediction = np.sum(mlr_coefs * np.column_stack((np.ones(X_pca.shape[0]),X_pca)),axis=1)
+    
+    return prediction, prediction_components 
