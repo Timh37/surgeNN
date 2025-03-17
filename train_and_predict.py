@@ -178,12 +178,16 @@ def train_and_predict(loss_function,loss_function_,possible_params,store_model,
 
             #concatenate across runs & compute statistics
             out_ds = xr.concat(tg_datasets,dim='i',coords='different')
+            
             out_ds = add_error_metrics_to_prediction_ds(out_ds,[.95,.98,.99,.995],3) #optional third argument 'max_numT_between_isolated_extremes' to exclude extremes isolated by more than n timesteps from another extreme from evaluation (to avoid including extremes mainly due to semi-diurnal tides, see manuscript for more explanation)
 
             out_ds = out_ds.assign_coords(tg = np.array([tg]))
             out_ds = out_ds.assign_coords(lon = ('tg',np.array([predictand['lon'].values[0]])))
             out_ds = out_ds.assign_coords(lat = ('tg',np.array([predictand['lat'].values[0]])))
 
+            if len(n_steps) == 1: #if n_steps is constant across i, obs doesn't need to have i as a dimension. Saves storage.
+                out_ds['o'] = out_ds['o'].isel(i=0,drop=True)
+                
             out_ds.attrs['temp_freq'] = temp_freq
             out_ds.attrs['n_cells'] = n_cells
             out_ds.attrs['n_epochs'] = n_epochs
@@ -229,16 +233,18 @@ if __name__ == "__main__":
     temp_freq = 3 # [hours] temporal frequency to use
 
     var_names = ['msl','u10','v10','w'] #variables to use
+    #var_names = ['msl','u10','v10']
 
     loss_function = 'mse' # default tensorflow loss function string or string of custom loss function of surgeNN.losses (e.g., 'gevl({gamma})')
     
     input_dir  = '/home/jovyan/test_surge_models/input/' #directory with predictor & predictand data
-    output_dir = '/home/jovyan/test_surge_models/results/nns/'#performance/',architecture+'/') #where to store the results
-
+    #output_dir = '/home/jovyan/test_surge_models/results/nns/'
+    output_dir = '/home/jovyan/test_surge_models/results/nns_v2/'
+    
     n_runs = 24 #how many iterations with different hyperparameter combinations to run
     n_iterations = 1
-    n_epochs = 100 #how many training epochs
-    patience = 10 #early stopping patience
+    n_epochs = 150 #how many training epochs
+    patience = 13 #early stopping patience
 
     store_model = 1 #whether to store the tensorflow model
     
