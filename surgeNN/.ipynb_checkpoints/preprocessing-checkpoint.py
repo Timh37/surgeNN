@@ -65,13 +65,15 @@ def split_predictand_stratified(predictand,split_fractions,start_month,how):
         #!to-do!: implement something that automatically works out appropriate bins for custom split_fractions and takes into account missing values in the timeseries. For now, only accepting these exact fractions.
         
     if how == 'amax':
-        grouped_years = predictand.groupby(predictand.shifted_year).surge.max()
+        grouped_years = predictand.groupby(predictand.shifted_year).surge.max() #ignores nans by default
     elif 'pct' in how:
         grouped_years = predictand.groupby(predictand.shifted_year).surge.quantile(float(how.replace('pct',''))/100)
     else:
         raise Exception('stratification method not yet implemented')
 
     ranked_years = grouped_years.sort_values(ascending=False) #sort years by metric
+    ranked_years = ranked_years[np.isfinite(ranked_years)] #get rid of years without any observations, for which max/quantile would evaluate to nan
+    
     binned_years = [ranked_years[k:k+bin_len] for k in np.arange(0,len(ranked_years),bin_len)] #create stratas of sorted years according to bin length
 
     years_train = []
@@ -81,7 +83,9 @@ def split_predictand_stratified(predictand,split_fractions,start_month,how):
     #determine which splits to assign years in each bin to:
     for this_bin in binned_years: 
         if len(this_bin)==1: #if only 1 year, there is no need to optimize the distribution
-            pass
+            this_perm = this_bin #pass year to test split directly
+            #pass #-->shouldnt this be 'this_perm = this_bin' ?? now the previous this_perm is appended twice??!! I guess what I wanted to do here was CONTINUE instead of PASS??, or tab the append(this_perm) block below the if statement??
+            #it doesnt really matter though for the list comprehension that comes after, its just that a bin with 1 year isnt used?
         else:
             bin_idx = np.arange(len(this_bin))
             all_perms = [this_bin.iloc[np.array(k)] for k in list(itertools.permutations(bin_idx))] #get all permutations of this bin's years values
