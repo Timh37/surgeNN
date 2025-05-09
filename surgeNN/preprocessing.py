@@ -5,7 +5,7 @@ import tensorflow as tf
 import itertools
 from scipy import signal 
 
-#subroutines to generate the train-validation-test splits --->
+#subroutine to generate train-validation-test splits in chronological order --->
 def split_predictand_and_predictors_chronological(predictand,predictors,split_fractions,n_steps):
     '''
     Split predictand and predictors chronologically.
@@ -21,8 +21,7 @@ def split_predictand_and_predictors_chronological(predictand,predictors,split_fr
     if np.sum(split_fractions)!=1:
         raise Exception('sum of split fractions must be 1')
         
-    idx_train_finite,idx_test_finite,idx_val_finite = get_train_test_val_idx(predictand['surge'].values,
-                                                                             split_fractions,shuffle=False) #get split indices (based on fractions of finite (!) observations)
+    idx_train_finite,idx_test_finite,idx_val_finite = get_train_test_val_idx(predictand['surge'].values,split_fractions,shuffle=False) #get split indices (based on fractions of finite (!) observations)
     idx_train, idx_val, idx_test = [range(k[0],k[-1]) for k in [idx_train_finite,idx_val_finite,idx_test_finite]] #expand the indices to finite and NaN observations:
 
     #take predictand splits
@@ -41,6 +40,76 @@ def split_predictand_and_predictors_chronological(predictand,predictors,split_fr
       
     return idx_train,idx_val,idx_test,x_train,x_val,x_test,y_train,y_val,y_test
 
+def get_train_test_val_idx(x,split_fractions,shuffle=False,random_state=0):
+    '''
+    divide x into train, test and validation splits and get indices of the timesteps in each split.
+    splits according to fraction of FINITE (!) values in x 
+    
+    Input:
+        x: data to split
+        split_fractions: list of fractions in the order [train,test,val]
+        shuffle: whether to random shuffle x before taking splits
+        random_state: seed for random shuffling
+    
+    Output: 
+        split indices
+    '''
+    if np.sum(split_fractions)!=1:
+        raise Exception('sum of split fractions must be 1')
+    train_fraction, test_fraction, val_fraction = split_fractions
+    
+    idx_finite = np.where(np.isfinite(x))[0] #do not count nans toward requested split fractions
+    x_finite = x[np.isfinite(x)]
+  
+    if shuffle: #first split into train and test:
+        x_train, x_test, idx_train, idx_test = train_test_split(x_finite, idx_finite, test_size=1- train_fraction,shuffle=shuffle,random_state=random_state)
+    else:
+        x_train, x_test, idx_train, idx_test = train_test_split(x_finite, idx_finite, test_size=1 - train_fraction,shuffle=shuffle)
+        
+    #then split test further into validation and test:
+    x_val, x_test, idx_val,idx_test = train_test_split(x_test, idx_test, test_size=test_fraction/(test_fraction + val_fraction),shuffle=False) 
+
+    return idx_train,idx_test,idx_val
+
+
+#subroutine to generate train-validation-test splits using a simple stratification scheme --->
+def split_predictand_and_predictors_with_stratified_years(predictand,predictors,split_fractions,n_steps,start_month,seed,how):
+    '''
+    Split predictand and predictors into years, stratify years according to the metric 'how', and semi-randomly assign years from each stratum to the splits.
+    
+    Input:
+        predictand: panda dataframe with predictand timeseries
+        predictors: xarray dataset with predictor timeseries
+        split_fractions: list of fractions in the order [train,test,val]
+        start_month: month at which to separate the years
+        seed: seed for random generator
+        how: stratify on 'amax', '[n]pct' with n an number, e.g., '99pct'
+    Output:
+        idx_train, idx_val, idx_test: split indices
+        x_train, x_val, x_test: splitted predictor data
+        y_train, y_val, y_test: splitted predictand data
+    '''
+    if np.sum(split_fractions)!=1:
+        raise Exception('sum of split fractions must be 1')
+        
+    np.random.seed(seed)
+ 
+    y_train, y_test, y_val = split_predictand_stratified(predictand,split_fractions,start_month=start_month,how=how)
+    idx_train,idx_val,idx_test = [k.index.values for k in [y_train,y_val,y_test]]
+ 
+    x_train,x_val,x_test = [predictors.sel(time=k['date'].values) for k in [y_train,y_val,y_test]]
+    y_train, y_val, y_test = [k.surge.values for k in [y_train,y_val,y_test]]
+
+    #set first n_steps observations in each split to NaN to avoid leakage between splits
+    y_train[0:n_steps-1] = np.nan #predictors not available at t<0
+    y_val[0:n_steps-1] = np.nan #to avoid leakage
+    y_test[0:n_steps-1] = np.nan #to avoid leakage
+
+    #prepend nan data to the n-1 steps before the first timestep that predictor data is available to be able to predict y at t_split=0
+    if n_steps>1:
+        x_train,x_val,x_test = [k.reindex({'time':np.append(k.time[0:n_steps-1] - k.time.diff(dim='time')[0] * (n_steps-1),k.time)}) for k in [x_train,x_val,x_test]]
+
+    return idx_train,idx_val,idx_test,x_train,x_val,x_test,y_train,y_val,y_test
 
 def split_predictand_stratified(predictand,split_fractions,start_month,how):
     '''
@@ -114,114 +183,8 @@ def split_predictand_stratified(predictand,split_fractions,start_month,how):
     
     return predictand_train,predictand_test,predictand_val
 
-def split_predictand_and_predictors_with_stratified_years(predictand,predictors,split_fractions,n_steps,start_month,seed,how):
-    '''
-    Split predictand and predictors into years, stratify years according to the metric 'how', and semi-randomly assign years from each stratum to the splits.
-    
-    Input:
-        predictand: panda dataframe with predictand timeseries
-        predictors: xarray dataset with predictor timeseries
-        split_fractions: list of fractions in the order [train,test,val]
-        start_month: month at which to separate the years
-        seed: seed for random generator
-        how: stratify on 'amax', '[n]pct' with n an number, e.g., '99pct'
-    Output:
-        idx_train, idx_val, idx_test: split indices
-        x_train, x_val, x_test: splitted predictor data
-        y_train, y_val, y_test: splitted predictand data
-    '''
-    if np.sum(split_fractions)!=1:
-        raise Exception('sum of split fractions must be 1')
-        
-    np.random.seed(seed)
- 
-    y_train, y_test, y_val = split_predictand_stratified(predictand,split_fractions,start_month=start_month,how=how)
-    idx_train,idx_val,idx_test = [k.index.values for k in [y_train,y_val,y_test]]
- 
-    x_train,x_val,x_test = [predictors.sel(time=k['date'].values) for k in [y_train,y_val,y_test]]
-    y_train, y_val, y_test = [k.surge.values for k in [y_train,y_val,y_test]]
 
-    #set first n_steps observations in each split to NaN to avoid leakage between splits
-    y_train[0:n_steps-1] = np.nan #predictors not available at t<0
-    y_val[0:n_steps-1] = np.nan #to avoid leakage
-    y_test[0:n_steps-1] = np.nan #to avoid leakage
-
-    #prepend nan data to the n-1 steps before the first timestep that predictor data is available to be able to predict y at t_split=0
-    if n_steps>1:
-        x_train,x_val,x_test = [k.reindex({'time':np.append(k.time[0:n_steps-1] - k.time.diff(dim='time')[0] * (n_steps-1),k.time)}) for k in [x_train,x_val,x_test]]
-
-    return idx_train,idx_val,idx_test,x_train,x_val,x_test,y_train,y_val,y_test
-
-def get_train_test_val_idx(x,split_fractions,shuffle=False,random_state=0):
-    '''
-    divide x into train, test and validation splits and get indices of the timesteps in each split.
-    splits according to fraction of FINITE (!) values in x 
-    
-    Input:
-        x: data to split
-        split_fractions: list of fractions in the order [train,test,val]
-        shuffle: whether to random shuffle x before taking splits
-        random_state: seed for random shuffling
-    
-    Output: 
-        split indices
-    '''
-    if np.sum(split_fractions)!=1:
-        raise Exception('sum of split fractions must be 1')
-    train_fraction, test_fraction, val_fraction = split_fractions
-    
-    idx_finite = np.where(np.isfinite(x))[0] #do not count nans toward requested split fractions
-    x_finite = x[np.isfinite(x)]
-  
-    if shuffle: #first split into train and test:
-        x_train, x_test, idx_train, idx_test = train_test_split(x_finite, idx_finite, test_size=1- train_fraction,shuffle=shuffle,random_state=random_state)
-    else:
-        x_train, x_test, idx_train, idx_test = train_test_split(x_finite, idx_finite, test_size=1 - train_fraction,shuffle=shuffle)
-        
-    #then split test further into validation and test:
-    x_val, x_test, idx_val,idx_test = train_test_split(x_test, idx_test, test_size=test_fraction/(test_fraction + val_fraction),shuffle=False) 
-
-    return idx_train,idx_test,idx_val
-
-#normalization & standardization --->
-def normalize_predictand_splits(y_train,y_val,y_test,output_transform=False):
-    '''
-    Input:
-        y_train,y_val,y_test: predictands divided into different splits
-        output_transform: whether to output train mean and standard deviation
-    Output:
-        normalize predictands & optionally transform used to normalize
-    '''       
-    #transform based on train split only:
-    y_train_min = np.nanmin(y_train) 
-    y_train_max = np.nanmax(y_train)
-               
-    y_train,y_val,y_test = [(k - y_train_min)/(y_train_max-y_train_min) for k in [y_train,y_val,y_test]] #note that val & test splits are normalized using train transform
-    
-    if output_transform == False:
-        return y_train,y_val,y_test
-    else:
-        return y_train,y_val,y_test,y_train_min,y_train_max
-    
-def normalize_predictor_splits(x_train,x_val,x_test,output_transform=False):
-    '''
-    Input:
-        x_train,x_val,x_test: predictands divided into different splits
-        output_transform: whether to output train min and max
-    Output:
-        normalized predictor xarray datasets & optionally transform used to normalize
-    '''    
-    #transform based on train split only:
-    x_train_min = x_train.min(dim='time') #skips nan by default
-    x_train_max = x_train.max(dim='time')
-
-    x_train,x_val,x_test = [(k - x_train_min)/(x_train_max-x_train_min) for k in [x_train,x_val,x_test]] #note that val & test splits are normalized using train transform
-    
-    if output_transform == False:
-        return x_train,x_val,x_test
-    else:
-        return x_train,x_val,x_test,x_train_min,x_train_max
-    
+#standardization --->
 def standardize_predictand_splits(y_train,y_val,y_test,output_transform=False):
     '''
     Input:

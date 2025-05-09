@@ -21,7 +21,7 @@ import xarray as xr
 def build_LSTM_stacked(n_lstm, n_dense, n_lstm_units, n_neurons,
                      n_timesteps,n_lats,n_lons,n_predictor_variables, 
                      model_name, dropout_rate, lr, loss_function,l2=0.01):
-    '''build an LSTM network where predictor variables are inputted as channels
+    '''build an LSTM network where predictor variables are inputted as features
     
     Input:
         n_lstm: number of lstm layers
@@ -448,7 +448,6 @@ def predict_gssr_mlr(predictors,mlr_coefs,training_components,grid_size_around_t
     s = (rmses<rmses_flipped).astype('int') #flip pcs if rmse of flipped pc is lower
     s[s==0]=-1
     X_pca = X_pca * s
-
 
     prediction = np.sum(mlr_coefs * np.column_stack((np.ones(X_pca.shape[0]),X_pca)),axis=1)
     
