@@ -31,5 +31,20 @@ def load_predictors(input_dir,tg): #open ERA5 wind and pressure predictors aroun
         predictors = xr.open_dataset(os.path.join(input_dir,tg.replace('.csv','_era5Predictors_5x5.nc')),engine='zarr')
     else:
         predictors = xr.open_dataset(os.path.join(input_dir,tg.replace('.csv','_era5Predictors_5x5.nc')))
-    predictors['w'] = np.sqrt(predictors['u10']**2+predictors['v10']**2) #compute wind speed from x/y components
+    if 'w' not in predictors.variables:
+        predictors['w'] = np.sqrt(predictors['u10']**2+predictors['v10']**2) #compute wind speed from x/y components
     return predictors
+
+def train_predict_output_to_ds(o,yhat,t,hyperparam_settings,model_architecture,lf_name):
+    return xr.Dataset(data_vars=dict(o=(["time"], o),yhat=(["time"], yhat),hyperparameters=(['p'],list(hyperparam_settings)),),
+            coords=dict(time=t,p=['batch_size', 'n_steps', 'n_convlstm', 'n_convlstm_units','n_dense', 'n_dense_units', 'dropout', 'lr', 'l2','dl_alpha'],),
+            attrs=dict(description=model_architecture+" - neural network prediction performance.",loss_function=lf_name),)
+
+def setup_output_dirs(output_dir,store_model,model_architecture):
+    performance_dir = os.path.join(output_dir,'performance',model_architecture)
+    model_dir = os.path.join(output_dir,'keras_models',model_architecture)
+    if os.path.exists(performance_dir)==False:
+        os.makedirs(performance_dir)
+    
+    if os.path.exists(model_dir)==False and store_model==True:
+        os.makedirs(model_dir)
