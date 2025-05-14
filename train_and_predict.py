@@ -55,10 +55,6 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
     Output: 
         out_ds: xarray dataset containing the model settings, predictions and performance
     '''
-    
-    ERA5_PATH = os.path.join(predictor_path,str(temp_freq)+'hourly') 
-    PREDICTAND_PATH = os.path.join(predictand_path,'t_tide_'+str(temp_freq)+'h_hourly_deseasoned_predictands') #slightly awkward, generalize this later
-    
     setup_output_dirs(output_dir,store_model,model_architecture)
     
     lf_name = list(loss_function.keys())[0]
@@ -72,7 +68,7 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
     for tg in tqdm(tgs): #loop over TGs:
         
         ### (1) Load & process predictors
-        predictors = load_predictors(ERA5_PATH,tg)
+        predictors = load_predictors(os.path.join(predictor_path,str(temp_freq)+'hourly'),tg)
         predictors = predictors.sel(time=slice('1979','2017')) #2017 because of end year GTSM simulations that are used as benchmark
         
         #determine how many grid cells around TG to use
@@ -89,7 +85,7 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
             predictors[var] = deseasonalize_da(predictors[var]) #remove mean seasonal cycle
 
         ### (2) Load & process predictands
-        predictand = load_predictand(PREDICTAND_PATH,tg) #open predictand csv
+        predictand = load_predictand(os.path.join(predictand_path,'t_tide_'+str(temp_freq)+'h_hourly_deseasoned_predictands'),tg) #open predictand csv
         predictand = predictand[(predictand['date']>=predictors.time.isel(time=0).values) & (predictand['date']<=predictors.time.isel(time=-1).values)]  # only use predictands when we also have predictor values
         predictand = deseasonalize_df_var(predictand,'surge','date') #remove mean seasonal cycle
 
@@ -100,7 +96,7 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
         ### (3) Configure sets of hyperparameters to run with
         all_settings = list(itertools.product(*hyperparam_options))
         n_settings = len(all_settings)
-        print(all_settings)
+
         if n_runs<n_settings:
             selected_settings = random.sample(all_settings, n_runs)
         else:
@@ -166,9 +162,9 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
                 yhat_test = model.predict(x_test,verbose=0).flatten()*y_train_sd + y_train_mean
 
                 #store results into xr dataset for current settings and iteration
-                ds_train = train_predict_output_to_ds(o_train,y_train,t_train,these_settings,model_architecture,lf_name)
-                ds_val = train_predict_output_to_ds(o_val,y_val,t_val,these_settings,model_architecture,lf_name)
-                ds_test = train_predict_output_to_ds(o_test,y_test,t_test,these_settings,model_architecture,lf_name)
+                ds_train = train_predict_output_to_ds(o_train,yhat_train,t_train,these_settings,model_architecture,lf_name)
+                ds_val = train_predict_output_to_ds(o_val,yhat_val,t_val,these_settings,model_architecture,lf_name)
+                ds_test = train_predict_output_to_ds(o_test,yhat_test,t_test,these_settings,model_architecture,lf_name)
                 '''
                 ds_train = xr.Dataset(data_vars=dict(o=(["time"], o_train),yhat=(["time"], yhat_train),hyperparameters=(['p'],list(these_settings)),),
                 coords=dict(time=t_train,p=['batch_size', 'n_steps', 'n_convlstm', 'n_convlstm_units','n_dense', 'n_dense_units', 'dropout', 'lr', 'l2','dl_alpha'],),
@@ -267,12 +263,12 @@ if __name__ == "__main__":
     predictor_path  = 'gs://leap-persistent/timh37/era5_predictors/'
     predictand_path = '/home/jovyan/test_surge_models/input/'
     output_dir = '/home/jovyan/test_surge_models/results/nns_ndeg_test/' #'/home/jovyan/test_surge_models/results/nns/'
-    store_model = 1 #whether to store the tensorflow models
+    store_model = 0#1 #whether to store the tensorflow models
     temp_freq = 3 # [hours] temporal frequency to use
     
     #training
     predictor_vars = ['msl','u10','v10','w'] #variables to use
-    n_runs = 1 #how many hyperparameter combinations to run
+    n_runs = 3 #how many hyperparameter combinations to run
     n_iterations = 1 #how many iterations to run per hyperparameter combination
     n_epochs = 150 #how many training epochs
     patience = 13 #early stopping patience
@@ -292,8 +288,8 @@ if __name__ == "__main__":
     n_convlstm_units = np.array([32]).astype('int')
     n_dense = np.array([2]).astype('int')
     n_dense_units = np.array([32]).astype('int')
-    dropout = np.array([0.1,0.2])
-    lrs = np.array([1e-5,5e-5,1e-4])
+    dropout = np.array([0.2])#np.array([0.1,0.2])
+    lrs = np.array([5e-5])#np.array([1e-5,5e-5,1e-4])
     l1s = np.array([0.02])
     
     hyperparam_options = [batch_size, n_steps, n_convlstm, n_convlstm_units,
