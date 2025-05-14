@@ -21,6 +21,16 @@ def load_predictand(input_dir,tg): #open csv files with predictands for a tide g
     predictand['date'] = pd.to_datetime(predictand['date'])
     return predictand
 
+def load_codec_as_predictand(input_dir,tg):
+    
+    predictand = xr.open_dataset(os.path.join(input_dir,'CoDEC_ERA5_at_gesla3_tgs_eu_hourly_anoms.nc'))
+    predictand = predictand.sel(tg=tg) #select tide gauges
+    predictand = predictand.rename({'time':'date'})
+
+    predictand = predictand.to_pandas().reset_index()[['surge','date','lon','lat']]
+    
+    return predictand
+
 def load_predictors(input_dir,tg): #open ERA5 wind and pressure predictors around a tide gauge (currently 5x5 degree input by default)
     '''
     input_dir:   directory where predictors are stored

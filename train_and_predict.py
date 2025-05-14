@@ -6,7 +6,7 @@ import numpy as np
 import os
 import sys
 import keras
-from surgeNN.io import load_predictand,load_predictors,train_predict_output_to_ds, setup_output_dirs
+from surgeNN.io import load_predictand,load_codec_as_predictand,load_predictors,train_predict_output_to_ds, setup_output_dirs
 from surgeNN.denseLoss import get_denseloss_weights #if starting with a clean environment, first, in terminal, do->'mamba install kdepy'
 from surgeNN.preprocessing import split_predictand_and_predictors_chronological,split_predictand_and_predictors_with_stratified_years
 from surgeNN.preprocessing import generate_batched_windowed_filtered_tf_input, generate_windowed_filtered_np_input, deseasonalize_da, deseasonalize_df_var
@@ -26,7 +26,7 @@ class GC_Callback(tf.keras.callbacks.Callback):
         
 def train_and_predict(model_architecture,loss_function,hyperparam_options,
                       split_fractions,strat_metric,strat_start_month,strat_seed,tgs,n_runs,n_iterations,n_epochs,patience,
-                      predictor_path,predictor_vars,predictor_degrees,predictand_path,temp_freq,output_dir,store_model):
+                      predictor_path,predictor_vars,predictor_degrees,predictand_source,predictand_path,temp_freq,output_dir,store_model):
     '''
     Execute model training and prediction and evaluation on test split. Uses a stratified splitting scheme.
     
@@ -47,6 +47,7 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
         predictor_path:      path to load predictor data from (must point to directories organized per temporal frequency) [str]
         predictor_vars:      predictor variables to use [list]
         predictor_degrees:   number of degrees of predictors around tide gauge to use [int/float]
+        predictand_source:   type of predictand data to use (currently implemented: 'gesla3' or 'codec') [str]
         predictand_path:     path to load predictand data from (must point to directories organized per temporal frequency) [str]
         temp_freq: temporal  frequency of input data to use [int]
         output_dir:          directory to store models and model performance to [str]
@@ -85,7 +86,13 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
             predictors[var] = deseasonalize_da(predictors[var]) #remove mean seasonal cycle
 
         ### (2) Load & process predictands
-        predictand = load_predictand(os.path.join(predictand_path,'t_tide_'+str(temp_freq)+'h_hourly_deseasoned_predictands'),tg) #open predictand csv
+        if predictand_source.lower() == 'gesla3':
+            predictand = load_predictand(os.path.join(predictand_path,'t_tide_'+str(temp_freq)+'h_hourly_deseasoned_predictands'),tg) #open predictand csv
+        elif predictand_source.lower() == 'codec':
+            predictand = load_codec_as_predictand(predictand_path,tg)
+        else:
+            raise Exception('Predictand source not recognized')
+            
         predictand = predictand[(predictand['date']>=predictors.time.isel(time=0).values) & (predictand['date']<=predictors.time.isel(time=-1).values)]  # only use predictands when we also have predictor values
         predictand = deseasonalize_df_var(predictand,'surge','date') #remove mean seasonal cycle
 
@@ -165,19 +172,7 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
                 ds_train = train_predict_output_to_ds(o_train,yhat_train,t_train,these_settings,model_architecture,lf_name)
                 ds_val = train_predict_output_to_ds(o_val,yhat_val,t_val,these_settings,model_architecture,lf_name)
                 ds_test = train_predict_output_to_ds(o_test,yhat_test,t_test,these_settings,model_architecture,lf_name)
-                '''
-                ds_train = xr.Dataset(data_vars=dict(o=(["time"], o_train),yhat=(["time"], yhat_train),hyperparameters=(['p'],list(these_settings)),),
-                coords=dict(time=t_train,p=['batch_size', 'n_steps', 'n_convlstm', 'n_convlstm_units','n_dense', 'n_dense_units', 'dropout', 'lr', 'l2','dl_alpha'],),
-                attrs=dict(description=model_architecture+" - neural network prediction performance.",loss_function=lf_name),)
-
-                ds_val = xr.Dataset(data_vars=dict(o=(["time"], o_val),yhat=(["time"], yhat_val),hyperparameters=(['p'],list(these_settings)),),
-                coords=dict(time=t_val,p=['batch_size', 'n_steps', 'n_convlstm', 'n_convlstm_units','n_dense', 'n_dense_units', 'dropout', 'lr', 'l2','dl_alpha'],),
-                attrs=dict(description=model_architecture+" - neural network prediction performance.",loss_function=lf_name),)
-
-                ds_test = xr.Dataset(data_vars=dict(o=(["time"], o_test),yhat=(["time"], yhat_test),hyperparameters=(['p'],list(these_settings)),),
-                coords=dict(time=t_test,p=['batch_size', 'n_steps', 'n_convlstm', 'n_convlstm_units','n_dense', 'n_dense_units', 'dropout', 'lr', 'l2','dl_alpha'],),
-                attrs=dict(description=model_architecture+" - neural network prediction performance.",loss_function=lf_name),)
-                '''
+          
                 ds_i = xr.concat((ds_train,ds_val,ds_test),dim='split',coords='different') #concatenate results for each split
                 ds_i = ds_i.assign_coords(split = ['train','val','test'])
 
@@ -262,6 +257,7 @@ if __name__ == "__main__":
     #i/o
     predictor_path  = 'gs://leap-persistent/timh37/era5_predictors/'
     predictand_path = '/home/jovyan/test_surge_models/input/'
+    predictand_source = 'codec'
     output_dir = '/home/jovyan/test_surge_models/results/nns_ndeg_test/' #'/home/jovyan/test_surge_models/results/nns/'
     store_model = 0#1 #whether to store the tensorflow models
     temp_freq = 3 # [hours] temporal frequency to use
@@ -297,7 +293,7 @@ if __name__ == "__main__":
     
     out_ds = train_and_predict(model_architecture,loss_function,hyperparam_options, #execute
                       split_fractions,strat_metric,strat_start_month,strat_seed,tgs,n_runs,n_iterations,n_epochs,patience,
-                     predictor_path,predictor_vars,predictor_degrees,predictand_path,temp_freq,output_dir,store_model)
+                     predictor_path,predictor_vars,predictor_degrees,predictand_source,predictand_path,temp_freq,output_dir,store_model)
     
 '''
 #Tensorflow pipeline for loading in batches:
