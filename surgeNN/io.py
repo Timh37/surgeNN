@@ -10,44 +10,157 @@ import xarray as xr
 import pandas as pd
 import numpy as np
 import os
+import fnmatch
+import gcsfs
 
+fs = gcsfs.GCSFileSystem() #list stores, stripp zarr from filename, load 
 
-def load_predictand(input_dir,tg): #open csv files with predictands for a tide gauge
-    '''
-    input_dir:   directory where predictands are stored
-    tg:          name of tide gauge to open predictands for
-    '''
-    predictand = pd.read_csv(os.path.join(input_dir,tg))
-    predictand['date'] = pd.to_datetime(predictand['date'])
-    return predictand
+class Predictand():
+    def __init__(self, path):
+        self.path = path
+        
+    def open_dataset(self,tg):
+        self.data = open_predictand(self.path,tg) #open tide gauge predictand file
+        
+    def trim_dates(self,date0,date1): #select predictand data at and between dates 0 and 1
+        self.data = self.data[(self.data['date']>=date0) & (self.data['date']<=date1)]
 
-def load_codec_as_predictand(input_dir,tg):
+    def resample_fillna(self,freq): #add NaNs at missing timesteps every freq (e.g., '3h')
+        resampled = self.data.set_index('date').resample(freq).fillna(method=None)
+        self.data = resampled.reset_index()[['surge','date','lon','lat']]   
+      
+    def deseasonalize(self): #remove mean annual cycle
+        monthly_means_at_timesteps = self.data.groupby(self.data['date'].dt.month).transform('mean')['surge'].astype('float64')
+        self.data['surge'] = self.data['surge'] - monthly_means_at_timesteps + np.mean(monthly_means_at_timesteps)
     
-    predictand = xr.open_dataset(os.path.join(input_dir,'CoDEC_ERA5_at_gesla3_tgs_eu_hourly_anoms.nc'))
-    predictand = predictand.sel(tg=tg) #select tide gauges
-    predictand = predictand.rename({'time':'date'})
-
-    predictand = predictand.to_pandas().reset_index()[['surge','date','lon','lat']]
+    def subtract_ameans(self): #subtract annual means at each timestep
+        df = self.data
+        annual_means_at_timesteps = df.groupby(df.date.dt.year).transform('mean')['surge'].astype('float64')
+        df['surge'] = df['surge'] - annual_means_at_timesteps
+        self.data = df
     
-    return predictand
+    def rolling_mean(self,window_len,temp_freq): #apply rolling mean
+        #crude way to filter out peaks due to uncorrected tides (Tiggeloven et al., 2021) (window_len = 12 #(hours))
+        self.data['surge'] = self.data['surge'].rolling(window=int(window_len/temp_freq+1),min_periods=int(window_len/temp_freq+1),center=True).mean() 
+        
+class Predictor():
+    def __init__(self, path):
+        self.path = path
+        
+    def open_dataset(self,tg,predictor_vars,n_cells): #open predictor dataset
+        self.data = open_predictors(self.path,tg,n_cells)[predictor_vars]
+      
+    def subtract_annual_means(self): #subtract annual means at each timestep
+        for var in list(self.data.keys()): #for each data variable
+            self.data[var] = self.data[var].groupby(self.data.time.dt.year) -self.data[var].groupby(self.data.time.dt.year).mean('time') #remove annual means
+   
+    def deseasonalize(self): #subtract mean annual cycle
+        for var in list(self.data.keys()):
+            da_minus_aslc = self.data[var].groupby(self.data.time.dt.month) - self.data[var].groupby(self.data.time.dt.month).mean('time')
+            self.data[var] = da_minus_aslc + (self.data[var].mean(dim='time') - da_minus_aslc.mean(dim='time'))
+            
+    def trim_years(self,year0,year1): #select between years
+        self.data = self.data.sel(time=slice(str(year0),str(year1)))
 
-def load_predictors(input_dir,tg): #open ERA5 wind and pressure predictors around a tide gauge (currently 5x5 degree input by default)
-    '''
-    input_dir:   directory where predictors are stored
-    tg:          name of tide gauge to open predictors for
-    '''
-    
-    if input_dir.startswith('gs://'):
-        predictors = xr.open_dataset(os.path.join(input_dir,tg.replace('.csv','_era5Predictors_5x5.nc')),engine='zarr')
+
+def open_predictors(path,tg,n_cells):
+    #Input:
+        #path: input path with predictor files [str]
+        #tg: tide gauge to open predictor file for [str]
+        #n_cells: cells around tide gauge to use [int]
+    #Output:
+        #predictors: dataset with predictor data [xr ds]
+        
+    in_cloud = path.startswith('gs://')
+        
+    if in_cloud:
+        fns = fs.ls(path)
+        tg_fns = fnmatch.filter(fns,'*'+tg.replace('.csv','')+'*')
     else:
-        predictors = xr.open_dataset(os.path.join(input_dir,tg.replace('.csv','_era5Predictors_5x5.nc')))
-    if 'w' not in predictors.variables:
-        predictors['w'] = np.sqrt(predictors['u10']**2+predictors['v10']**2) #compute wind speed from x/y components
-    return predictors
+        fns = os.listdir(path)
+        tg_fns = fnmatch.filter(fns,'*'+tg.replace('.csv','')+'*')
 
-def train_predict_output_to_ds(o,yhat,t,hyperparam_settings,model_architecture,lf_name):
-    return xr.Dataset(data_vars=dict(o=(["time"], o),yhat=(["time"], yhat),hyperparameters=(['p'],list(hyperparam_settings)),),
-            coords=dict(time=t,p=['batch_size', 'n_steps', 'n_convlstm', 'n_convlstm_units','n_dense', 'n_dense_units', 'dropout', 'lr', 'l2','dl_alpha'],),
+    if len(tg_fns)==0:
+        raise Exception('No predictor dataset found for tide gauge: '+tg)
+    elif len(tg_fns)>1:
+        raise Exception('Multiple predictor datasets found for tide gauge: '+tg)
+    else:
+        fn = tg_fns[0].split('/')[-1]
+
+    if in_cloud:
+        predictors = xr.open_dataset(os.path.join(path,fn),engine='zarr',chunks='auto')
+    else:
+        predictors = xr.open_dataset(os.path.join(path,fn),chunks='auto')
+
+    if len(predictors.lon_around_tg)!=len(predictors.lat_around_tg):
+        raise Exception('Predictor data must be provided on a squared lon-lat grid.')
+
+    max_n_cells = len(predictors.lon_around_tg)
+    
+    if n_cells > max_n_cells:
+        print('Warning - "n_cells" is larger than the the available number of grid cells. Using the available number instead.')
+              
+    n_cells = np.min([n_cells,max_n_cells])
+
+    predictors = predictors.isel(lon_around_tg = np.arange(0+int((max_n_cells-n_cells)/2),max_n_cells-int((max_n_cells-n_cells)/2)),
+                         lat_around_tg = np.arange(0+int((max_n_cells-n_cells)/2),max_n_cells-int((max_n_cells-n_cells)/2)))
+
+    if 'w' not in predictors.variables:
+        predictors['w'] = np.sqrt(predictors['u10']**2+predictors['v10']**2) #compute wind speed from x/y components #rename in case it's called different?
+
+    return predictors
+    
+    
+def open_predictand(path,tg):
+    #Input:
+        #path: input path to dir with 1 .csv file per tide gauge or netcdf file with all tide gauges [str]
+        #tg: tide gauge to get predictand for [str]
+
+    #Output:
+        #predictand: dataframe with predictand data [pd df]
+        
+    if path.endswith('.nc'):
+        predictand = xr.open_dataset(path).sel(tg=tg)
+        predictand = predictand.rename({'time':'date'})
+        predictand = predictand.to_pandas().reset_index()[['surge','date','lon','lat']]
+
+    elif os.path.isdir(path):
+        fns = os.listdir(path)
+        tg_fns = fnmatch.filter(fns,'*'+tg.replace('.csv','')+'*')
+        
+        if len(tg_fns)==0:
+            raise Exception('No predictand file found for tide gauge: '+tg)
+        elif len(tg_fns)>1:
+            raise Exception('Multiple predictand files found for tide gauge: '+tg)
+        else:
+            fn = tg_fns[0].split('/')[-1]
+
+        predictand = pd.read_csv(os.path.join(path,fn))
+        predictand['date'] = pd.to_datetime(predictand['date'])
+
+    else:
+        raise Exception('Predictand path must be .nc file or folder with .csv files.')
+            
+    return predictand
+    
+'''
+def load_predictors_multisite(input_dir,tgs,n_degrees): #open ERA5 wind and pressure predictors around multiple tide gauges and load
+
+    #input_dir:   directory where predictors are stored
+    #tg:          name of tide gauge to open predictors for
+
+    predictors = []
+    for tg in tgs:
+        predictor = load_predictors(input_dir,tg,n_degrees)
+        predictor = predictor.swap_dims({'lat_around_tg':'latitude','lon_around_tg':'longitude'}).stack(c=('latitude','longitude'))
+        predictors.append(predictor)
+    
+    return xr.concat(predictors,dim='c').drop_duplicates(dim='c')
+'''
+def train_predict_output_to_ds(o,yhat,t,hyperparam_settings,tgs,model_architecture,lf_name):
+
+    return xr.Dataset(data_vars=dict(o=(["time","tg"], np.array(o).reshape(-1, len(tgs))),yhat=(["time","tg"], np.array(yhat).reshape(-1, len(tgs))),hyperparameters=(['p'],list(hyperparam_settings)),),
+            coords=dict(time=t,tg=tgs,p=['batch_size', 'n_steps', 'n_convlstm', 'n_convlstm_units','n_dense', 'n_dense_units', 'dropout', 'lr', 'l2','dl_alpha'],),
             attrs=dict(description=model_architecture+" - neural network prediction performance.",loss_function=lf_name),)
 
 def setup_output_dirs(output_dir,store_model,model_architecture):
