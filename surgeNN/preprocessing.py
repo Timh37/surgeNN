@@ -1,3 +1,4 @@
+
 import numpy as np
 from sklearn.model_selection import train_test_split
 import xarray as xr
@@ -5,6 +6,56 @@ import tensorflow as tf
 import itertools
 from scipy import signal 
 
+
+class Input():
+    def __init__(self, predictors,predictand,model_architecture):
+        self.predictors = predictors.data
+        self.predictand = predictand.data
+        
+        #stack predictor variables
+        stacked_vars = xr.concat([self.predictors[k] for k in list(self.predictors.keys())],dim='var').transpose(...,'var')
+        
+        if model_architecture.lower() == 'convlstm':
+            self.predictors['stacked'] = stacked_vars
+        elif model_architecture.lower() == 'lstm':
+            self.predictors['stacked'] = stacked_vars.stack(f=('lat_around_tg','lon_around_tg','var'))
+        else:
+            raise Exception('Model architecture must be "lstm" or "convlstm".')
+             
+    def split_chronological(self,split_fractions,n_steps):
+        self.idx_train,self.idx_val,self.idx_test,self.x_train,self.x_val,self.x_test,self.y_train,self.y_val,self.y_test = split_predictand_and_predictors_chronological(self.predictand,self.predictors,split_fractions,n_steps)
+        self.t_train = self.predictand['date'].values[self.idx_train][np.isfinite(self.y_train)]
+        self.t_val = self.predictand['date'].values[self.idx_val][np.isfinite(self.y_val)]
+        self.t_test = self.predictand['date'].values[self.idx_test][np.isfinite(self.y_test)]
+
+    def split_stratified(self,split_fractions,n_steps,start_month,seed,how):
+        self.idx_train,self.idx_val,self.idx_test,self.x_train,self.x_val,self.x_test,self.y_train,self.y_val,self.y_test = split_predictand_and_predictors_with_stratified_years(self.predictand,self.predictors,
+                                                                                                                                split_fractions,n_steps,start_month,seed,how)
+        self.t_train = self.predictand['date'].values[self.idx_train][np.isfinite(self.y_train)]
+        self.t_val = self.predictand['date'].values[self.idx_val][np.isfinite(self.y_val)]
+        self.t_test = self.predictand['date'].values[self.idx_test][np.isfinite(self.y_test)]
+        
+    def standardize(self):
+        self.y_train,self.y_val,self.y_test,self.y_train_mean,self.y_train_sd = standardize_predictand_splits(self.y_train,self.y_val,self.y_test,True)
+        self.x_train,self.x_val,self.x_test = standardize_predictor_splits(self.x_train,self.x_val,self.x_test,False)
+        return self.y_train_mean,self.y_train_sd
+    
+    def compute_denseloss_weights(self,alpha):
+        from .denseLoss import get_denseloss_weights
+        self.w_train,self.w_val,self.w_test = [get_denseloss_weights(k, alpha) for k in [self.y_train,self.y_val,self.y_test]]
+        
+    def get_windowed_filtered_np_input(self,split,n_steps):
+        if split=='train':
+            x,y,w = generate_windowed_filtered_np_input(self.x_train['stacked'].load(),self.y_train,n_steps,self.w_train)
+        elif split=='val':
+            x,y,w = generate_windowed_filtered_np_input(self.x_val['stacked'].load(),self.y_val,n_steps,self.w_val)
+        elif split=='test':
+            x,y,w = generate_windowed_filtered_np_input(self.x_test['stacked'].load(),self.y_test,n_steps,self.w_test)
+        else:
+            raise Exception('Split: '+str(split)+' does not exist.')
+        return x,y,w
+        
+        
 #subroutine to generate train-validation-test splits in chronological order --->
 def split_predictand_and_predictors_chronological(predictand,predictors,split_fractions,n_steps):
     '''
@@ -188,14 +239,14 @@ def split_predictand_stratified(predictand,split_fractions,start_month,how):
 def standardize_predictand_splits(y_train,y_val,y_test,output_transform=False):
     '''
     Input:
-        y_train,y_val,y_test: predictands divided into different splits
+        y_train,y_val,y_test: predictands divided into different splits (rows must be timesteps)
         output_transform: whether to output train mean and standard deviation
     Output:
         standardized predictands & optionally transform used to standardize
     '''    
     #transform based on train split:
-    y_train_mean = np.nanmean(y_train) 
-    y_train_sd = np.nanstd(y_train,ddof=0)
+    y_train_mean = np.nanmean(y_train,axis=0) 
+    y_train_sd = np.nanstd(y_train,ddof=0,axis=0)
                
     y_train, y_val, y_test = [(k - y_train_mean)/y_train_sd for k in [y_train,y_val,y_test]] #note that val & test splits are standardized using train transform
 
@@ -223,9 +274,6 @@ def standardize_predictor_splits(x_train,x_val,x_test,output_transform=False):
     else:
         return x_train,x_val,x_test,x_train_mean,x_train_sd
 
-def standardize_timeseries(timeseries):
-    return ( timeseries - np.nanmean(timeseries) ) / np.nanstd( timeseries, ddof=0)
-
 #format input in the right way to train the neural networks --->
 def generate_windowed_filtered_np_input(x,y,n_steps,w=None):
     '''
@@ -241,8 +289,13 @@ def generate_windowed_filtered_np_input(x,y,n_steps,w=None):
     '''
     x_out = np.stack([x[k:k+n_steps,:] for k in np.arange(x.shape[0])][0:-(n_steps-1)],axis=0) #create windowed predictor array (x(t=-n_steps to t=0) to predict y(t=0)
     
+    if len(y.shape)==1:
+        y_ = np.repeat(y[:,np.newaxis],1,axis=1)
+    else:
+        y_ = y
+        
     #filter where y is nan
-    where_y_is_finite = np.isfinite(y)
+    where_y_is_finite = np.isfinite(y_).all(axis=1)
     x_out = x_out[where_y_is_finite,...]
     y_out = y[where_y_is_finite]
 
@@ -302,17 +355,18 @@ def batched_windowed_dataset_from_dataset(dataset, n_steps, batch_size):
     ds = ds.flat_map(lambda x: x).batch(n_steps)
     return ds.batch(batch_size)
 
+'''
 def stack_predictors_for_lstm(predictors,var_names):
-    ''' stack predictors to prepare for lstm input'''
+    # stack predictors to prepare for lstm input
     return np.reshape(np.stack([predictors[k].values for k in var_names],axis=-1),
-                      (len(predictors.time),len(predictors.latitude) * len(predictors.longitude) * len(var_names))) #stack grid cells & variables
+                      (len(predictors.time),np.prod([predictors.dims[k] for k in predictors.dims if k!='time']) * len(var_names))) #stack grid cells & variables
 
 def stack_predictors_for_convlstm(predictors,var_names):
-    ''' stack predictors to prepare for convlstm input'''
+    # stack predictors to prepare for convlstm input
     return np.stack([predictors[k].values for k in var_names],axis=-1) #stack variables
-
+'''
 def deseasonalize_df_var(df_in,var,time_var):
-    '''subtract long-term monthly means from variable in dataframe '''
+    '''subtract long-term monthly means from variable in dataframe'''
     df = df_in.copy(deep=True)
     monthly_means_at_timesteps = df.groupby(df[time_var].dt.month).transform('mean')[var].astype('float64') #contains mean of all timesteps in month for all years together at each timestep in that month
     df[var] = df[var] - monthly_means_at_timesteps + np.mean(monthly_means_at_timesteps) #subtract without changing the overall mean of timeseries
