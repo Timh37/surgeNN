@@ -1,5 +1,4 @@
 import tensorflow as tf
-import matplotlib.pyplot as plt
 import xarray as xr
 import fnmatch
 import numpy as np
@@ -7,15 +6,11 @@ import os
 import sys
 import keras
 from surgeNN import io, preprocessing
-from surgeNN.io import train_predict_output_to_ds, setup_output_dirs
+from surgeNN.io import train_predict_output_to_ds, setup_output_dirs, add_loss_to_output
 #from surgeNN.denseLoss import get_denseloss_weights #if starting with a clean environment, first, in terminal, do->'mamba install kdepy'
-from surgeNN.preprocessing import split_predictand_and_predictors_chronological,split_predictand_and_predictors_with_stratified_years
-from surgeNN.preprocessing import generate_batched_windowed_filtered_tf_input, generate_windowed_filtered_np_input, deseasonalize_da, deseasonalize_df_var
 from surgeNN.evaluation import add_error_metrics_to_prediction_ds,rmse
-from surgeNN.preprocessing import stack_predictors_for_lstm, stack_predictors_for_convlstm, standardize_predictand_splits, standardize_predictor_splits
 from surgeNN.models import build_LSTM_stacked, build_ConvLSTM2D_with_channels
 from surgeNN.losses import gevl,exp_negexp_mse,obs_squared_weighted_mse, obs_weighted_mse
-from sklearn.metrics import confusion_matrix
 from tqdm import tqdm
 import itertools
 import random
@@ -49,7 +44,7 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
         predictor_vars:      predictor variables to use [list]
         predictor_degrees:   number of degrees of predictors around tide gauge to use [int/float]
         predictand_path:     path to load predictand data from (must point to directories organized per temporal frequency) [str]
-        temp_freq: temporal  frequency of input data to use [int]
+        temp_freq: temporal  hourly frequency of input data to use [int]
         output_dir:          directory to store models and model performance to [str]
         store_models:        boolean indicating whether to output Tensorflow models [True/False]
         
@@ -144,15 +139,7 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
                 ds_i = xr.concat((ds_train,ds_val,ds_test),dim='split',coords='different') #concatenate results for each split
                 ds_i = ds_i.assign_coords(split = ['train','val','test'])
 
-                loss = np.nan*np.zeros(n_epochs) #add loss of training to output ds
-                val_loss = np.nan*np.zeros(n_epochs)
-
-                loss[0:len(train_history.history['loss'])] = train_history.history['loss']
-                val_loss[0:len(train_history.history['val_loss'])] = train_history.history['val_loss']
-
-                ds_i['loss'] = (['e'],loss)
-                ds_i['val_loss'] = (['e'],val_loss)
-
+                ds_i = add_loss_to_output(ds_i,train_history,n_epochs)
                 tg_datasets.append(ds_i) #append output of current iteration to list of all outputs
                     
                 if store_model:
@@ -160,7 +147,7 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
                     my_fn = model_architecture+'_'+str(temp_freq)+'h_'+tg.replace('.csv','')+'_'+lf_name+'_hp1_i'+str(i)+'_it'
                     
                     model.save(os.path.join(my_path,
-                     my_fn+str(len(fnmatch.filter(os.listdir(my_path),my_fn+'*')))+'.keras'))
+                                     my_fn+str(len(fnmatch.filter(os.listdir(my_path),my_fn+'*')))+'.keras'))
                 
                 del model, train_history, ds_i #, x_train, x_val, x_test
                 tf.keras.backend.clear_session()
@@ -170,7 +157,6 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
             out_ds = xr.concat(tg_datasets,dim='i',coords='different')
             out_ds = add_error_metrics_to_prediction_ds(out_ds,[.95,.98,.99,.995],3) #optional third argument 'max_numT_between_isolated_extremes' to exclude extremes isolated by more than n timesteps from another extreme from evaluation (to avoid including extremes mainly due to semi-diurnal tides, see manuscript for more explanation)
 
-            #out_ds = out_ds.assign_coords(tg = np.array([tg])) #add TG information
             out_ds = out_ds.assign_coords(lon = ('tg',np.array([predictand.data['lon'].values[0]])))
             out_ds = out_ds.assign_coords(lat = ('tg',np.array([predictand.data['lat'].values[0]])))
 

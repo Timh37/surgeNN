@@ -163,6 +163,19 @@ def train_predict_output_to_ds(o,yhat,t,hyperparam_settings,tgs,model_architectu
             coords=dict(time=t,tg=tgs,p=['batch_size', 'n_steps', 'n_convlstm', 'n_convlstm_units','n_dense', 'n_dense_units', 'dropout', 'lr', 'l2','dl_alpha'],),
             attrs=dict(description=model_architecture+" - neural network prediction performance.",loss_function=lf_name),)
 
+def add_loss_to_output(output,train_history,n_epochs):
+    
+    loss = np.nan*np.zeros(n_epochs) #add loss of training to output ds
+    val_loss = np.nan*np.zeros(n_epochs)
+
+    loss[0:len(train_history.history['loss'])] = train_history.history['loss']
+    val_loss[0:len(train_history.history['val_loss'])] = train_history.history['val_loss']
+
+    output['loss'] = (['e'],loss)
+    output['val_loss'] = (['e'],val_loss)
+    
+    return output
+
 def setup_output_dirs(output_dir,store_model,model_architecture):
     performance_dir = os.path.join(output_dir,'performance',model_architecture)
     model_dir = os.path.join(output_dir,'keras_models',model_architecture)
