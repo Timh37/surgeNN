@@ -45,15 +45,22 @@ class Input():
         self.w_train,self.w_val,self.w_test = [get_denseloss_weights(k, alpha) for k in [self.y_train,self.y_val,self.y_test]]
         
     def get_windowed_filtered_np_input(self,split,n_steps):
+        
+        if hasattr(self, 'w_train') == False:
+            self.w_train = None
+        if hasattr(self, 'w_val') == False:
+            self.w_val = None
+        if hasattr(self, 'w_test') == False:
+            self.w_test = None
+    
         if split=='train':
-            x,y,w = generate_windowed_filtered_np_input(self.x_train['stacked'].load(),self.y_train,n_steps,self.w_train)
+            return generate_windowed_filtered_np_input(self.x_train['stacked'].load(),self.y_train,n_steps,self.w_train)
         elif split=='val':
-            x,y,w = generate_windowed_filtered_np_input(self.x_val['stacked'].load(),self.y_val,n_steps,self.w_val)
+            return generate_windowed_filtered_np_input(self.x_val['stacked'].load(),self.y_val,n_steps,self.w_val)
         elif split=='test':
-            x,y,w = generate_windowed_filtered_np_input(self.x_test['stacked'].load(),self.y_test,n_steps,self.w_test)
+            return generate_windowed_filtered_np_input(self.x_test['stacked'].load(),self.y_test,n_steps,self.w_test)
         else:
             raise Exception('Split: '+str(split)+' does not exist.')
-        return x,y,w
         
         
 #subroutine to generate train-validation-test splits in chronological order --->
