@@ -50,44 +50,6 @@ def build_LSTM_stacked(n_lstm, n_dense, n_lstm_units, n_neurons,
     x = layers.Dense(n_neurons[n_dense-1],activation='relu',activity_regularizer=regularizers.l2(l2))(x)
     x = layers.Dropout((dropout_rate))(x)   
     
-    output = layers.Dense(n_output,activation='linear',dtype='float64')(x)
-
-    model = keras.Model(inputs=lstm_input, outputs=output,name=model_name)  #construct the Keras model   
-    model.compile(optimizer=keras.optimizers.Adam(learning_rate=lr),loss=loss_function,weighted_metrics=[]) #compile the model
-    return model
-
-def build_LSTM_stacked_multioutput(n_lstm, n_dense, n_lstm_units, n_neurons,
-                     predictor_shape,n_output,
-                     model_name, dropout_rate, lr, loss_function,l2=0.01):
-    '''build an LSTM network where predictor variables are inputted as features
-    
-    Input:
-        n_lstm: number of lstm layers
-        n_dense: number of dense layers
-        n_lstm_unis: list of number of units per lstm layer
-        n_neurons: list of number of neurons per dense layer
-        n_timesteps,n_lats,n_lons,n_predictor_variables: number of timesteps, latitude, longitude grid cells and predictor variables used
-        model_name: tensorflow model name
-        dropout_rate: dropout rate
-        lr: learning rate
-        loss_function: loss function to use
-        l2: regularization rate
-    Output:
-        compiled tensorflow model
-    '''
-    lstm_input = keras.Input(shape=predictor_shape)
-    x = lstm_input
-    for l in np.arange(n_lstm-1):
-        x = layers.LSTM(n_lstm_units[l], return_sequences=True)(x)  
-    x = layers.LSTM(n_lstm_units[n_lstm-1], return_sequences=False)(x)  
-    
-    #add densely connected layers:
-    for l in np.arange(n_dense-1):
-        x = layers.Dense(n_neurons[l],activation='relu',activity_regularizer=regularizers.l2(l2))(x)
-        x = layers.Dropout((dropout_rate))(x)
-    x = layers.Dense(n_neurons[n_dense-1],activation='relu',activity_regularizer=regularizers.l2(l2))(x)
-    x = layers.Dropout((dropout_rate))(x)   
-    
     outputs = []
     for k in np.arange(n_output):
         outputs.append(layers.Dense(1,activation='linear',dtype='float64')(x))
@@ -95,7 +57,6 @@ def build_LSTM_stacked_multioutput(n_lstm, n_dense, n_lstm_units, n_neurons,
     model = keras.Model(inputs=lstm_input, outputs=outputs,name=model_name)  #construct the Keras model   
     model.compile(optimizer=keras.optimizers.Adam(learning_rate=lr),loss=loss_function,weighted_metrics=[]) #compile the model
     return model
-
 
 def build_LSTM_stacked_multioutput_static(n_lstm, n_dense, n_lstm_units, n_neurons,
                      predictor_shape,n_output,n_static,
@@ -295,8 +256,11 @@ def build_ConvLSTM2D_with_channels(n_convlstm, n_dense, n_kernels, n_neurons,
     x = layers.Dense(n_neurons[n_dense-1],activation='relu',activity_regularizer=regularizers.l2(l2))(x)
     x = layers.Dropout((dropout_rate))(x)   
     
-    output = layers.Dense(n_output,activation='linear',dtype='float64')(x)
-    model = keras.Model(inputs=cnn_input, outputs=output,name=model_name)  #construct the Keras model   
+    outputs = []
+    for k in np.arange(n_output):
+        outputs.append(layers.Dense(1,activation='linear',dtype='float64')(x))
+        
+    model = keras.Model(inputs=cnn_input, outputs=outputs,name=model_name)  #construct the Keras model   
     model.compile(optimizer=keras.optimizers.Adam(learning_rate=lr),loss=loss_function,metrics=['accuracy']) #compile the model
     
     return model
