@@ -170,3 +170,45 @@ def setup_output_dirs(output_dir,store_model,model_architecture):
     
     if os.path.exists(model_dir)==False and store_model==True:
         os.makedirs(model_dir)
+        
+        
+class Output():
+    def __init__(self, path):
+        self.path = path
+        
+    def open_performance_data(self,tgs):
+        
+        in_cloud = self.path.startswith('gs://')
+        
+        if self.path.endswith(('.nc', '.zarr')):
+            if in_cloud:
+                ds = xr.open_dataset(self.path,engine='zarr').sel(tg=tgs)
+            else:
+                ds = xr.open_dataset(self.path).sel(tg=tgs)
+        else:
+            datasets = []
+            
+            if in_cloud:
+                fns = fs.ls(self.path)
+                for tg in tgs:
+                    tg_fns = ['gs://'+k for k in fnmatch.filter(fns,'*'+tg.replace('.csv','')+'*')]
+                    if len(tg_fns) == 0:
+                        raise Exception('No performance datasets found for tide gauge: '+tg)
+                    datasets.append(xr.open_mfdataset(tg_fns,combine='nested',concat_dim='it',engine='zarr')) 
+            else:
+                fns = os.listdir(self.path)
+                for tg in tgs:
+                    tg_fns = [os.path.join(self.path,k) for k in fnmatch.filter(fns,'*'+tg.replace('.csv','')+'*')]
+                    if len(tg_fns) == 0:
+                        raise Exception('No performance datasets found for tide gauge: '+tg)
+                    datasets.append(xr.open_mfdataset(tg_fns,combine='nested',concat_dim='it'))
+                
+            ds = xr.concat(datasets,dim='tg')
+            ds['tg'] = tgs
+        self.data = ds
+    
+    def observed_thresholds(self):
+        return self.data.o.isel(it=0).quantile(self.data['quantile'],dim='time')
+    
+    def observed_stds(self):
+        return self.data.o.isel(it=0).std(dim='time',ddof=0)
