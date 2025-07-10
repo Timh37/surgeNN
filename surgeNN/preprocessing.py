@@ -8,20 +8,17 @@ from scipy import signal
 
 
 class Input():
-    def __init__(self, predictors,predictand,model_architecture):
+    def __init__(self, predictors,predictand):
         self.predictors = predictors.data
         self.predictand = predictand.data
         
         #stack predictor variables
         stacked_vars = xr.concat([self.predictors[k] for k in list(self.predictors.keys())],dim='var').transpose(...,'var')
+        self.predictors['stacked'] = stacked_vars
         
-        if model_architecture.lower() == 'convlstm':
-            self.predictors['stacked'] = stacked_vars
-        elif model_architecture.lower() == 'lstm':
-            self.predictors['stacked'] = stacked_vars.stack(f=('lat_around_tg','lon_around_tg','var'))
-        else:
-            raise Exception('Model architecture must be "lstm" or "convlstm".')
-             
+    def stack_predictor_coords(self):
+        self.predictors['stacked'] = self.predictors['stacked'].stack(f=self.predictors['stacked'].dims[1::])
+        
     def split_chronological(self,split_fractions,n_steps):
         self.idx_train,self.idx_val,self.idx_test,self.x_train,self.x_val,self.x_test,self.y_train,self.y_val,self.y_test = split_predictand_and_predictors_chronological(self.predictand,self.predictors,split_fractions,n_steps)
         self.t_train = self.predictand['date'].values[self.idx_train][np.isfinite(self.y_train)]
