@@ -96,7 +96,10 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
                 this_batch_size,this_n_steps,this_n_convlstm,this_n_convlstm_units,this_n_dense,this_n_dense_units,this_dropout,this_lr,this_l2,this_dl_alpha = these_settings #pick hyperparameters for this run
 
                 #generate train, validation and test splits & prepare input for model
-                model_input = preprocessing.Input(predictors,predictand,model_architecture)
+                model_input = preprocessing.Input(predictors,predictand)
+                if model_architecture == 'lstm':
+                    model_input.stack_predictor_coords()
+                    
                 model_input.split_stratified(split_fractions,this_n_steps,strat_start_month,strat_seed,strat_metric)
                 y_train_mean,y_train_sd = model_input.standardize()
         
