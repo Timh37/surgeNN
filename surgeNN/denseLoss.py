@@ -89,17 +89,31 @@ def get_denseloss_weights(data,alpha):
     requires 'kdepy' package
     
     Input:
-        data: samples of observations to assign weights to
+        data: samples of observations to assign weights to. if 2d, script loops over columns
         alpha: scaling factor for those weights
         
     Output
         weights: sample weights
     '''
-    where_finite_data = np.isfinite(data)
+    data_shape = data.shape
     
-    target_relevance = TargetRelevance(data[where_finite_data], alpha=alpha) #generate loss weights based on finite values in data
+    if len(data_shape)>1:
+        ncols = data.shape[-1]
+    else:
+        ncols = 1
+        data = np.reshape(data,(-1,1))
+
+    weights = np.nan * data #initialize weights with the same length as data
+        
+    for col in range(ncols):
+        col_data = data[:,col]
+     
+        where_finite_data = np.isfinite(col_data)
+
+        target_relevance = TargetRelevance(col_data[where_finite_data], alpha=alpha) #generate loss weights based on finite values in data
+
+        weights[where_finite_data,col] = target_relevance.eval(col_data[where_finite_data]).flatten()
     
-    weights = np.nan * np.zeros(len(data)) #initialize weights with the same length as data
-    weights[where_finite_data] = target_relevance.eval(data[where_finite_data]).flatten()
-    
+    weights = np.reshape(weights,data_shape)
+        
     return weights
