@@ -1,0 +1,13 @@
+#!/bin/bash -x
+
+for files in /Volumes/Naamloos/PhD_Data/GTSM_HighResMIP/HadGEM3-GC31-HM/surge/10min/HadGEM3-GC31-HM*nc; do
+    name=${files##*/}
+    echo /Volumes/Naamloos/PhD_Data/GTSM_HighResMIP/HadGEM3-GC31-HM/surge/10min/$name
+    stripped=${name#*surge_}
+    year=${stripped::4}
+    month=${stripped:5:2}
+
+    cdo -select,date=$(cdo -s -showtimestamp -selyear,$year -selmonth,$month /Volumes/Naamloos/PhD_Data/GTSM_HighResMIP/HadGEM3-GC31-HM/stretched_3hourly_360day_HadGEM3_rounded10min_after.nc | sed 's/^[ \t]*//' | perl -pe 's/  /,/g')  /Volumes/Naamloos/PhD_Data/GTSM_HighResMIP/HadGEM3-GC31-HM/surge/10min/$name /Volumes/Naamloos/PhD_Data/GTSM_HighResMIP/HadGEM3-GC31-HM/surge/stretched_3hourly_rounded10min_after/$name 
+
+
+done

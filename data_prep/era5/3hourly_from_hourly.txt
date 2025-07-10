@@ -1,0 +1,8 @@
+#!/bin/bash -x
+
+for files in /Volumes/Naamloos/PhD_Data/ERA5/hourly_wind_msl/ERA5_hourly_NorthAtlantic_*.nc; do
+    name=${files##*/}
+    echo $name
+
+    cdo selhour,0,3,6,9,12,15,18,21 /Volumes/Naamloos/PhD_Data/ERA5/hourly_wind_msl/$name /Volumes/Naamloos/PhD_Data/ERA5/3hourly_wind_msl/ERA5_3hourly_NorthAtlantic_${name:(-7)}
+done

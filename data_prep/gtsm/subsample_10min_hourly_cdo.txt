@@ -1,0 +1,7 @@
+#!/bin/bash -x
+
+for files in /Volumes/Naamloos/PhD_Data/GTSM_HighResMIP/HadGEM3-GC31-HM/surge/10min/HadGEM3-GC31-HM*nc; do
+    name=${files##*/}
+    echo /Volumes/Naamloos/PhD_Data/GTSM_HighResMIP/HadGEM3-GC31-HM/surge/10min/$name
+    cdo  seltimestep,1/5000/6 /Volumes/Naamloos/PhD_Data/GTSM_HighResMIP/HadGEM3-GC31-HM/surge/10min/$name /Volumes/Naamloos/PhD_Data/GTSM_HighResMIP/HadGEM3-GC31-HM/surge/hourly/$name 
+done
