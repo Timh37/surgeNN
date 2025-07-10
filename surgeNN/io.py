@@ -142,21 +142,7 @@ def open_predictand(path,tg):
         raise Exception('Predictand path must be .nc file or folder with .csv files.')
             
     return predictand
-    
-'''
-def load_predictors_multisite(input_dir,tgs,n_degrees): #open ERA5 wind and pressure predictors around multiple tide gauges and load
 
-    #input_dir:   directory where predictors are stored
-    #tg:          name of tide gauge to open predictors for
-
-    predictors = []
-    for tg in tgs:
-        predictor = load_predictors(input_dir,tg,n_degrees)
-        predictor = predictor.swap_dims({'lat_around_tg':'latitude','lon_around_tg':'longitude'}).stack(c=('latitude','longitude'))
-        predictors.append(predictor)
-    
-    return xr.concat(predictors,dim='c').drop_duplicates(dim='c')
-'''
 def train_predict_output_to_ds(o,yhat,t,hyperparam_settings,tgs,model_architecture,lf_name):
 
     return xr.Dataset(data_vars=dict(o=(["time","tg"], np.array(o).reshape(-1, len(tgs))),yhat=(["time","tg"], np.array(yhat).reshape(-1, len(tgs))),hyperparameters=(['p'],list(hyperparam_settings)),),
