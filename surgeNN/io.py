@@ -176,35 +176,48 @@ class Output():
     def __init__(self, path):
         self.path = path
         
-    def open_performance_data(self,tgs):
+    def open_performance_data(self,tgs,stored_per_tg=True):
         
         in_cloud = self.path.startswith('gs://')
+        is_file = self.path.endswith(('.nc', '.zarr'))
         
-        if self.path.endswith(('.nc', '.zarr')):
+        if is_file:
             if in_cloud:
                 ds = xr.open_dataset(self.path,engine='zarr').sel(tg=tgs)
             else:
                 ds = xr.open_dataset(self.path).sel(tg=tgs)
-        else:
-            datasets = []
-            
-            if in_cloud:
-                fns = fs.ls(self.path)
-                for tg in tgs:
-                    tg_fns = ['gs://'+k for k in fnmatch.filter(fns,'*'+tg.replace('.csv','')+'*')]
-                    if len(tg_fns) == 0:
-                        raise Exception('No performance datasets found for tide gauge: '+tg)
-                    datasets.append(xr.open_mfdataset(tg_fns,combine='nested',concat_dim='it',engine='zarr')) 
-            else:
-                fns = os.listdir(self.path)
-                for tg in tgs:
-                    tg_fns = [os.path.join(self.path,k) for k in fnmatch.filter(fns,'*'+tg.replace('.csv','')+'*')]
-                    if len(tg_fns) == 0:
-                        raise Exception('No performance datasets found for tide gauge: '+tg)
-                    datasets.append(xr.open_mfdataset(tg_fns,combine='nested',concat_dim='it'))
+        
+        if not is_file:
+         
+            if not stored_per_tg:
                 
-            ds = xr.concat(datasets,dim='tg')
-            ds['tg'] = tgs
+                if in_cloud:
+                    fns = ['gs://'+k for k in fs.ls(self.path) if not k.startswith('.')]
+                    ds = xr.open_mfdataset(fns,combine='nested',concat_dim='it',engine='zarr').sel(tg=tgs)
+                else:
+                    fns = [os.path.join(self.path,k) for k in os.listdir(self.path) if not k.startswith('.')]
+                    ds = xr.open_mfdataset(fns,combine='nested',concat_dim='it').sel(tg=tgs)
+            else:
+                datasets = []
+
+                if in_cloud:
+                    fns = fs.ls(self.path)
+
+                    for tg in tgs:
+                        tg_fns = ['gs://'+k for k in fnmatch.filter(fns,'*'+tg.replace('.csv','')+'*')]
+                        if len(tg_fns) == 0:
+                            raise Exception('No performance datasets found for tide gauge: '+tg)
+                        datasets.append(xr.open_mfdataset(tg_fns,combine='nested',concat_dim='it',engine='zarr')) 
+                else:
+                    fns = os.listdir(self.path)
+                    for tg in tgs:
+                        tg_fns = [os.path.join(self.path,k) for k in fnmatch.filter(fns,'*'+tg.replace('.csv','')+'*')]
+                        if len(tg_fns) == 0:
+                            raise Exception('No performance datasets found for tide gauge: '+tg)
+                        datasets.append(xr.open_mfdataset(tg_fns,combine='nested',concat_dim='it'))
+
+                ds = xr.concat(datasets,dim='tg')
+                ds['tg'] = tgs
         self.data = ds
     
     def observed_thresholds(self):
@@ -212,3 +225,9 @@ class Output():
     
     def observed_stds(self):
         return self.data.o.isel(it=0).std(dim='time',ddof=0)
+    
+    def get_split_ratios(self):
+        return np.isfinite(self.data.o.isel(it=0)).sum(dim='time')/np.isfinite(self.data.o.isel(it=0)).sum(dim='time').sum(dim='split') #fractions of splits
+    
+    def get_split_lengths(self):
+        return np.isfinite(self.data.o.isel(it=0)).sum(dim='time') #total number of finite timesteps in each split
