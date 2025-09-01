@@ -7,10 +7,10 @@ import itertools
 from scipy import signal 
 
 
-class Input():
+class trainingInput():
     def __init__(self, predictors,predictand):
-        self.predictors = predictors.data
-        self.predictand = predictand.data
+        self.predictors = predictors.data.copy(deep=True)
+        self.predictand = predictand.data.copy(deep=True)
         
         #stack predictor variables
         stacked_vars = xr.concat([self.predictors[k] for k in list(self.predictors.keys())],dim='var').transpose(...,'var')
@@ -21,16 +21,16 @@ class Input():
         
     def split_chronological(self,split_fractions,n_steps):
         self.idx_train,self.idx_val,self.idx_test,self.x_train,self.x_val,self.x_test,self.y_train,self.y_val,self.y_test = split_predictand_and_predictors_chronological(self.predictand,self.predictors,split_fractions,n_steps)
-        self.t_train = self.predictand['date'].values[self.idx_train][np.isfinite(self.y_train)]
-        self.t_val = self.predictand['date'].values[self.idx_val][np.isfinite(self.y_val)]
-        self.t_test = self.predictand['date'].values[self.idx_test][np.isfinite(self.y_test)]
+        self.t_train = self.predictand['date'].values[self.idx_train]
+        self.t_val = self.predictand['date'].values[self.idx_val]
+        self.t_test = self.predictand['date'].values[self.idx_test]
 
     def split_stratified(self,split_fractions,n_steps,start_month,seed,how):
         self.idx_train,self.idx_val,self.idx_test,self.x_train,self.x_val,self.x_test,self.y_train,self.y_val,self.y_test = split_predictand_and_predictors_with_stratified_years(self.predictand,self.predictors,
                                                                                                                                 split_fractions,n_steps,start_month,seed,how)
-        self.t_train = self.predictand['date'].values[self.idx_train][np.isfinite(self.y_train)]
-        self.t_val = self.predictand['date'].values[self.idx_val][np.isfinite(self.y_val)]
-        self.t_test = self.predictand['date'].values[self.idx_test][np.isfinite(self.y_test)]
+        self.t_train = self.predictand['date'].values[self.idx_train]
+        self.t_val = self.predictand['date'].values[self.idx_val]
+        self.t_test = self.predictand['date'].values[self.idx_test]
         
     def standardize(self):
         self.y_train,self.y_val,self.y_test,self.y_train_mean,self.y_train_sd = standardize_predictand_splits(self.y_train,self.y_val,self.y_test,True)
@@ -51,15 +51,36 @@ class Input():
             self.w_test = None
     
         if split=='train':
+            self.t_train = self.t_train[np.isfinite(self.y_train)]
             return generate_windowed_filtered_np_input(self.x_train['stacked'].load(),self.y_train,n_steps,self.w_train)
         elif split=='val':
+            self.t_val = self.t_val[np.isfinite(self.y_val)]
             return generate_windowed_filtered_np_input(self.x_val['stacked'].load(),self.y_val,n_steps,self.w_val)
         elif split=='test':
+            self.t_test = self.t_test[np.isfinite(self.y_test)]
             return generate_windowed_filtered_np_input(self.x_test['stacked'].load(),self.y_test,n_steps,self.w_test)
         else:
             raise Exception('Split: '+str(split)+' does not exist.')
+
+            
+class predictionInput():
+    def __init__(self, predictors):
+        self.predictors = predictors.data.copy(deep=True)
         
-        
+        #stack predictor variables
+        stacked_vars = xr.concat([self.predictors[k] for k in list(self.predictors.keys())],dim='var').transpose(...,'var')
+        self.predictors['stacked'] = stacked_vars
+    
+    def stack_predictor_coords(self):
+        self.predictors['stacked'] = self.predictors['stacked'].stack(f=self.predictors['stacked'].dims[1::])    
+    
+    def standardize(self):
+        self.predictors = (self.predictors - self.predictors.mean(dim='time'))/self.predictors.std(dim='time',ddof=0) 
+    
+    def get_windowed_filtered_np_input(self,n_steps):
+        x_windowed,unused = generate_windowed_filtered_np_input(self.predictors['stacked'].load(),np.zeros(len(self.predictors.time)-n_steps+1),n_steps)
+        return x_windowed
+    
 #subroutine to generate train-validation-test splits in chronological order --->
 def split_predictand_and_predictors_chronological(predictand,predictors,split_fractions,n_steps):
     '''
@@ -291,7 +312,10 @@ def generate_windowed_filtered_np_input(x,y,n_steps,w=None):
         x_out: windowed, nan-filtered predictors
         y_out: nan-filtered predictands
     '''
-    x_out = np.stack([x[k:k+n_steps,:] for k in np.arange(x.shape[0])][0:-(n_steps-1)],axis=0) #create windowed predictor array (x(t=-n_steps to t=0) to predict y(t=0)
+    if n_steps==1:
+        x_out = np.stack([x[k:k+n_steps,:] for k in np.arange(x.shape[0])],axis=0)
+    else:
+        x_out = np.stack([x[k:k+n_steps,:] for k in np.arange(x.shape[0])][0:-(n_steps-1)],axis=0) #create windowed predictor array (x(t=-n_steps to t=0) to predict y(t=0)
     
     if len(y.shape)==1:
         y_ = np.repeat(y[:,np.newaxis],1,axis=1)
@@ -359,16 +383,7 @@ def batched_windowed_dataset_from_dataset(dataset, n_steps, batch_size):
     ds = ds.flat_map(lambda x: x).batch(n_steps)
     return ds.batch(batch_size)
 
-'''
-def stack_predictors_for_lstm(predictors,var_names):
-    # stack predictors to prepare for lstm input
-    return np.reshape(np.stack([predictors[k].values for k in var_names],axis=-1),
-                      (len(predictors.time),np.prod([predictors.dims[k] for k in predictors.dims if k!='time']) * len(var_names))) #stack grid cells & variables
 
-def stack_predictors_for_convlstm(predictors,var_names):
-    # stack predictors to prepare for convlstm input
-    return np.stack([predictors[k].values for k in var_names],axis=-1) #stack variables
-'''
 def deseasonalize_df_var(df_in,var,time_var):
     '''subtract long-term monthly means from variable in dataframe'''
     df = df_in.copy(deep=True)
@@ -399,3 +414,37 @@ def bandstop_filter_hourly_predictand(predictand,attenuation,f1,f2,order):
     predictand_ffill = predictand_ffill.loc[predictand_ffill['date'].isin(predictand['date'])]
 
     return predictand_ffill
+
+'''
+#Tensorflow pipeline for loading in batches:
+
+#get values & timestamps of observations to compare predictions with
+o_val = y_train_sd * y_val[np.isfinite(y_val)][0:int(np.sum(np.isfinite(y_val))/batch_size)] + y_train_mean #back-transform observations val split
+o_test = y_train_sd * y_test[np.isfinite(y_test)][0:int(np.sum(np.isfinite(y_val))/batch_size)] + y_train_mean #back-transform observations val split
+
+t_val = predictand['date'].values[idx_val][np.isfinite(y_val)][0:int(np.sum(np.isfinite(y_val))/batch_size)]
+t_test = predictand['date'].values[idx_test][np.isfinite(y_test)][0:int(np.sum(np.isfinite(y_val))/batch_size)]
+
+#create windowed predictors, filter out timesteps with NaN observations & create batches:
+if use_dl == False: #if not using weights
+    z_train = create_batched_sequenced_datasets(x_train, y_train, this_n_steps, this_batch_size).cache() #cache() speeds up the training by loading in the data at epoch 0, but takes up a lot of memory
+    z_val = create_batched_sequenced_datasets(x_val, y_val, this_n_steps, this_batch_size).cache()
+
+    x_val_ds = z_val.map(lambda a, b : a) #unpack z_val for prediction
+
+elif use_dl == True: #if using weights
+    z_train = create_batched_sequenced_datasets(x_train, y_train, this_n_steps, this_batch_size, w_train).cache()
+    z_val = create_batched_sequenced_datasets(x_val, y_val, this_n_steps, this_batch_size, w_val).cache()
+
+    x_val_ds = z_val.map(lambda a, b, c: a) #unpack z_val for prediction
+
+z_test = create_batched_sequenced_datasets(x_test, y_test, this_n_steps, this_batch_size) #to-do: z_test doesn't have to be batched?
+x_test_ds = z_test.map(lambda a, b: a) #unpack z_test for prediction
+
+history = model.fit(z_train,epochs=n_epochs,validation_data=z_val,callbacks=[tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=5,
+                            restore_best_weights=True)],verbose=0) #train model
+
+#make predictions & back-transform
+yhat_val = model.predict(x_val_ds,verbose=0).flatten()*y_train_sd + y_train_mean
+yhat_test = model.predict(x_test_ds,verbose=0).flatten()*y_train_sd + y_train_mean
+'''

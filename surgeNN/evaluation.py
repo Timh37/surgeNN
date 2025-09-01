@@ -20,6 +20,13 @@ def rmse(y_obs,y_pred):
 def r_pearson(y_obs,y_pred):
     return np.corrcoef(y_obs,y_pred)[0][1]
 
+def r_pearson_finite(x,y):
+    x=x.flatten()
+    y=y.flatten()
+    x_ = x[np.isfinite(x)*np.isfinite(y)]
+    y_ = y[np.isfinite(x)*np.isfinite(y)]
+    return np.corrcoef(x_,y_)[0,1]
+
 def compute_precision(true_pos,false_pos):
     return true_pos/(true_pos+false_pos)
 
