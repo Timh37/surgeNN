@@ -1,0 +1,10 @@
+batch_size = np.array([128]).astype('int')
+n_steps = np.array([9]).astype('int')
+n_convlstm = np.array([1]).astype('int')
+n_convlstm_units = np.array([32]).astype('int')
+n_dense = np.array([2]).astype('int')
+n_dense_units = np.array([32]).astype('int')
+dropout = np.array([0.1])
+lrs = np.array([5e-5])
+l1s = np.array([0.02])
+    
