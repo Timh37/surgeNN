@@ -7,7 +7,6 @@ import sys
 import keras
 from surgeNN import io, preprocessing
 from surgeNN.io import train_predict_output_to_ds, setup_output_dirs, add_loss_to_output
-#from surgeNN.denseLoss import get_denseloss_weights #if starting with a clean environment, first, in terminal, do->'mamba install kdepy'
 from surgeNN.evaluation import add_error_metrics_to_prediction_ds,rmse
 from surgeNN.models import build_LSTM_stacked, build_ConvLSTM2D_with_channels
 from surgeNN.losses import gevl,exp_negexp_mse,obs_squared_weighted_mse, obs_weighted_mse
@@ -40,7 +39,7 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
         n_iterations:        number of repetitions to run each setting with [int]
         n_epochs:            maximum number of epochs to train with [int]
         patience:            patience parameter for early stopping [int]
-        predictor_path:      path to load predictor data from (must point to directories organized per temporal frequency) [str]
+        predictor_path:      path to load predictor data from (must point to directories organized per temporal frequency) [str] ---> expected to have regularly spaced and no missing data at the moment!
         predictor_vars:      predictor variables to use [list]
         predictor_degrees:   number of degrees of predictors around tide gauge to use [int/float]
         predictand_path:     path to load predictand data from (must point to directories organized per temporal frequency) [str]
@@ -77,7 +76,10 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
         predictand.trim_dates(predictors.data.time.isel(time=0).values,predictors.data.time.isel(time=-1).values)
         predictand.deseasonalize()
         predictand.resample_fillna(str(temp_freq)+'h')
-    
+        '''
+        import pandas as pd
+        predictand.data.to_csv('test.csv') #save preprocessed predictand data
+        '''
         ### (2) Configure sets of hyperparameters to run with
         all_settings = list(itertools.product(*hyperparam_options))
         n_settings = len(all_settings)
@@ -94,9 +96,9 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
             for i,these_settings in enumerate(selected_settings): #for each set of hyperparameters
                 
                 this_batch_size,this_n_steps,this_n_convlstm,this_n_convlstm_units,this_n_dense,this_n_dense_units,this_dropout,this_lr,this_l2,this_dl_alpha = these_settings #pick hyperparameters for this run
-
+ 
                 #generate train, validation and test splits & prepare input for model
-                model_input = preprocessing.Input(predictors,predictand)
+                model_input = preprocessing.trainingInput(predictors,predictand)
                 if model_architecture == 'lstm':
                     model_input.stack_predictor_coords()
                     
@@ -152,7 +154,7 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
                     model.save(os.path.join(my_path,
                                      my_fn+str(len(fnmatch.filter(os.listdir(my_path),my_fn+'*')))+'.keras'))
                 
-                del model, train_history, ds_i #, x_train, x_val, x_test
+                del model, model_input, train_history, ds_i #, x_train, x_val, x_test
                 tf.keras.backend.clear_session()
                 gc.collect()
 
@@ -173,11 +175,13 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
             out_ds.attrs['loss_function'] = lf_name
             out_ds.attrs['split_fractions'] = split_fractions
             out_ds.attrs['stratification'] = strat_metric+'_'+str(strat_start_month)+'_'+str(strat_seed)
+            out_ds.attrs['predictor_vars'] = predictor_vars
             
             my_path = os.path.join(output_dir,'performance',model_architecture)
             my_fn = model_architecture+'_'+str(temp_freq)+'h_'+tg.replace('.csv','')+'_'+lf_name+'_hp1_ndeg'+str(predictor_degrees)+'_it'
             
-            #out_ds.to_netcdf(os.path.join(my_path,my_fn+str(len(fnmatch.filter(os.listdir(my_path),my_fn+'*')))+'.nc'),mode='w')
+            out_ds.to_netcdf(os.path.join(my_path,my_fn+str(len(fnmatch.filter(os.listdir(my_path),my_fn+'*')))+'.nc'),mode='w')
+            
     return out_ds
 
 
@@ -212,18 +216,19 @@ if __name__ == "__main__":
     #configure standard settings if running main:
     
     #i/o
-    predictor_path  = 'gs://leap-persistent/timh37/era5_predictors/3hourly/'
-    predictand_path = '/home/jovyan/test_surge_models/input/CoDEC_ERA5_at_gesla3_tgs_eu_hourly_anoms.nc'#'/home/jovyan/test_surge_models/input/t_tide_3h_hourly_deseasoned_predictands'
-    output_dir = '/home/jovyan/test_surge_models/results/nns_codec_test/' #'/home/jovyan/test_surge_models/results/nns/'
+    predictor_path  = 'gs://leap-persistent/timh37/era5_predictors/3hourly/' #'gs://leap-persistent/timh37/HighResMIP/surgeNN_predictors/'#
+    #predictand_path = '/home/jovyan/surgeNN/input/CoDEC_ERA5_at_gesla3_tgs_eu_hourly_anoms.nc'#'/home/jovyan/surgeNN/input/GTSM_HighResMIP_HadGEM3-GC31-HM_at_gesla3_tgs_stretched_3hourly_rounded10min_after2.nc'
+    predictand_path = '/home/jovyan/surgeNN/input/t_tide_3h_hourly_deseasoned_predictands'
+    output_dir = '/home/jovyan/surgeNN/results/nns/'
     store_model = 0#1 #whether to store the tensorflow models
     temp_freq = 3 # [hours] temporal frequency to use
     
     #training
     predictor_vars = ['msl','u10','v10','w'] #variables to use
-    n_runs = 1 #how many hyperparameter combinations to run
+    n_runs = 24 #how many hyperparameter combinations to run
     n_iterations = 1 #how many iterations to run per hyperparameter combination
-    n_epochs = 1 #how many training epochs
-    patience = 13 #early stopping patience
+    n_epochs = 100 #how many training epochs
+    patience = 10 #early stopping patience
     loss_function = {'mse':'mse'} # default tensorflow loss function string or string of custom loss function of surgeNN.losses (e.g., 'gevl({gamma})')
     
     #splitting & stratified sampling
@@ -234,6 +239,7 @@ if __name__ == "__main__":
 
     #hyperparameters:
     #dl_alpha = np.array([0,1,3,5]).astype('int') #defined from command line
+   
     batch_size = np.array([128]).astype('int')
     n_steps = np.array([9]).astype('int')
     n_convlstm = np.array([1]).astype('int')
@@ -251,36 +257,3 @@ if __name__ == "__main__":
                       split_fractions,strat_metric,strat_start_month,strat_seed,tgs,n_runs,n_iterations,n_epochs,patience,
                      predictor_path,predictor_vars,predictor_degrees,predictand_path,temp_freq,output_dir,store_model)
     
-'''
-#Tensorflow pipeline for loading in batches:
-
-#get values & timestamps of observations to compare predictions with
-o_val = y_train_sd * y_val[np.isfinite(y_val)][0:int(np.sum(np.isfinite(y_val))/batch_size)] + y_train_mean #back-transform observations val split
-o_test = y_train_sd * y_test[np.isfinite(y_test)][0:int(np.sum(np.isfinite(y_val))/batch_size)] + y_train_mean #back-transform observations val split
-
-t_val = predictand['date'].values[idx_val][np.isfinite(y_val)][0:int(np.sum(np.isfinite(y_val))/batch_size)]
-t_test = predictand['date'].values[idx_test][np.isfinite(y_test)][0:int(np.sum(np.isfinite(y_val))/batch_size)]
-
-#create windowed predictors, filter out timesteps with NaN observations & create batches:
-if use_dl == False: #if not using weights
-    z_train = create_batched_sequenced_datasets(x_train, y_train, this_n_steps, this_batch_size).cache() #cache() speeds up the training by loading in the data at epoch 0, but takes up a lot of memory
-    z_val = create_batched_sequenced_datasets(x_val, y_val, this_n_steps, this_batch_size).cache()
-
-    x_val_ds = z_val.map(lambda a, b : a) #unpack z_val for prediction
-
-elif use_dl == True: #if using weights
-    z_train = create_batched_sequenced_datasets(x_train, y_train, this_n_steps, this_batch_size, w_train).cache()
-    z_val = create_batched_sequenced_datasets(x_val, y_val, this_n_steps, this_batch_size, w_val).cache()
-
-    x_val_ds = z_val.map(lambda a, b, c: a) #unpack z_val for prediction
-
-z_test = create_batched_sequenced_datasets(x_test, y_test, this_n_steps, this_batch_size) #to-do: z_test doesn't have to be batched?
-x_test_ds = z_test.map(lambda a, b: a) #unpack z_test for prediction
-
-history = model.fit(z_train,epochs=n_epochs,validation_data=z_val,callbacks=[tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=5,
-                            restore_best_weights=True)],verbose=0) #train model
-
-#make predictions & back-transform
-yhat_val = model.predict(x_val_ds,verbose=0).flatten()*y_train_sd + y_train_mean
-yhat_test = model.predict(x_test_ds,verbose=0).flatten()*y_train_sd + y_train_mean
-'''
