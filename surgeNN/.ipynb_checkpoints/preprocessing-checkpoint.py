@@ -38,8 +38,9 @@ class trainingInput():
         return self.y_train_mean,self.y_train_sd
     
     def compute_denseloss_weights(self,alpha):
-        from .denseLoss import get_denseloss_weights
-        self.w_train,self.w_val,self.w_test = [get_denseloss_weights(k, alpha) for k in [self.y_train,self.y_val,self.y_test]]
+        if alpha is not None:
+            from .denseLoss import get_denseloss_weights
+            self.w_train,self.w_val,self.w_test = [get_denseloss_weights(k, alpha) for k in [self.y_train,self.y_val,self.y_test]]
         
     def get_windowed_filtered_np_input(self,split,n_steps):
         
@@ -331,7 +332,7 @@ def generate_windowed_filtered_np_input(x,y,n_steps,w=None):
         w_out = w[where_y_is_finite]
         return x_out,y_out,w_out
     else:
-        return x_out,y_out
+        return x_out,y_out,np.nan*y_out
 
 def generate_batched_windowed_filtered_tf_input(x,y,n_steps,batch_size,weights=None):
     '''
