@@ -33,7 +33,7 @@ class Predictand():
         monthly_means_at_timesteps = self.data.groupby(self.data['date'].dt.month).transform('mean')['surge'].astype('float64')
         self.data['surge'] = self.data['surge'] - monthly_means_at_timesteps + np.mean(monthly_means_at_timesteps)
     
-    def subtract_ameans(self): #subtract annual means at each timestep
+    def subtract_annual_means(self): #subtract annual means at each timestep
         df = self.data
         annual_means_at_timesteps = df.groupby(df.date.dt.year).transform('mean')['surge'].astype('float64')
         df['surge'] = df['surge'] - annual_means_at_timesteps
@@ -58,7 +58,13 @@ class Predictor():
         for var in list(self.data.keys()):
             da_minus_aslc = self.data[var].groupby(self.data.time.dt.month) - self.data[var].groupby(self.data.time.dt.month).mean('time')
             self.data[var] = da_minus_aslc + (self.data[var].mean(dim='time') - da_minus_aslc.mean(dim='time'))
-            
+    
+    def load_data(self):
+        self.data = self.data.load()
+        
+    def trim_dates(self,date0,date1):
+        self.data = self.data.sel(time=slice(date0,date1))
+        
     def trim_years(self,year0,year1): #select between years
         self.data = self.data.sel(time=slice(str(year0),str(year1)))
 
@@ -102,7 +108,11 @@ def open_predictors(path,tg,n_cells):
               
     n_cells = np.min([n_cells,max_n_cells])
 
-    predictors = predictors.isel(lon_around_tg = np.arange(0+int((max_n_cells-n_cells)/2),max_n_cells-int((max_n_cells-n_cells)/2)),
+    if n_cells==1:
+        predictors = predictors.isel(lon_around_tg = [int((max_n_cells/2)-1)],
+                         lat_around_tg = [int((max_n_cells/2)-1)]) #take the middle-left cell
+    else:   
+        predictors = predictors.isel(lon_around_tg = np.arange(0+int((max_n_cells-n_cells)/2),max_n_cells-int((max_n_cells-n_cells)/2)),
                          lat_around_tg = np.arange(0+int((max_n_cells-n_cells)/2),max_n_cells-int((max_n_cells-n_cells)/2)))
 
     if 'w' not in predictors.variables:
