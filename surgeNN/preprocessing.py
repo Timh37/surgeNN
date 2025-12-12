@@ -31,7 +31,13 @@ class trainingInput():
         self.t_train = self.predictand['date'].values[self.idx_train]
         self.t_val = self.predictand['date'].values[self.idx_val]
         self.t_test = self.predictand['date'].values[self.idx_test]
-        
+    
+    def split_by_years(self,years,n_steps):
+        self.idx_train,self.idx_val,self.idx_test,self.x_train,self.x_val,self.x_test,self.y_train,self.y_val,self.y_test = split_predictand_and_predictors_by_years(self.predictand,self.predictors,years,n_steps)
+        self.t_train = self.predictand['date'].values[self.idx_train]
+        self.t_val = self.predictand['date'].values[self.idx_val]
+        self.t_test = self.predictand['date'].values[self.idx_test]
+    
     def standardize(self):
         self.y_train,self.y_val,self.y_test,self.y_train_mean,self.y_train_sd = standardize_predictand_splits(self.y_train,self.y_val,self.y_test,True)
         self.x_train,self.x_val,self.x_test = standardize_predictor_splits(self.x_train,self.x_val,self.x_test,False)
@@ -53,13 +59,16 @@ class trainingInput():
     
         if split=='train':
             self.t_train = self.t_train[np.isfinite(self.y_train)]
-            return generate_windowed_filtered_np_input(self.x_train['stacked'].load(),self.y_train,n_steps,self.w_train)
+            #return generate_windowed_filtered_np_input(self.x_train['stacked'].load(),self.y_train,n_steps,self.w_train)
+            return generate_windowed_filtered_np_input(self.x_train['stacked'],self.y_train,n_steps,self.w_train)
         elif split=='val':
             self.t_val = self.t_val[np.isfinite(self.y_val)]
-            return generate_windowed_filtered_np_input(self.x_val['stacked'].load(),self.y_val,n_steps,self.w_val)
+            #return generate_windowed_filtered_np_input(self.x_val['stacked'].load(),self.y_val,n_steps,self.w_val)
+            return generate_windowed_filtered_np_input(self.x_val['stacked'],self.y_val,n_steps,self.w_val)
         elif split=='test':
             self.t_test = self.t_test[np.isfinite(self.y_test)]
-            return generate_windowed_filtered_np_input(self.x_test['stacked'].load(),self.y_test,n_steps,self.w_test)
+            #return generate_windowed_filtered_np_input(self.x_test['stacked'].load(),self.y_test,n_steps,self.w_test)
+            return generate_windowed_filtered_np_input(self.x_test['stacked'],self.y_test,n_steps,self.w_test)
         else:
             raise Exception('Split: '+str(split)+' does not exist.')
 
@@ -100,6 +109,38 @@ def split_predictand_and_predictors_chronological(predictand,predictors,split_fr
         
     idx_train_finite,idx_test_finite,idx_val_finite = get_train_test_val_idx(predictand['surge'].values,split_fractions,shuffle=False) #get split indices (based on fractions of finite (!) observations)
     idx_train, idx_val, idx_test = [range(k[0],k[-1]) for k in [idx_train_finite,idx_val_finite,idx_test_finite]] #expand the indices to finite and NaN observations:
+
+    #take predictand splits
+    y_train, y_val, y_test = [predictand['surge'].values[k] for k in [idx_train,idx_val,idx_test]]
+    
+    #set first n_steps observations in each split to NaN to avoid leakage:
+    y_train[0:n_steps-1] = np.nan #predictors not available at t<0
+    y_val[0:n_steps-1] = np.nan #to avoid leakage
+    y_test[0:n_steps-1] = np.nan #to avoid leakage
+
+    #take predictor splits
+    x_train, x_val, x_test = [ predictors.sel(time=slice(predictand['date'].values[k[0]],predictand['date'].values[k[-1]])) for k in [idx_train,idx_val,idx_test]]
+    
+    if n_steps>1: #prepend nan data to the n-1 steps before the first timestep that predictor data is available to be able to predict y at t_split=0
+        x_train,x_val,x_test = [k.reindex({'time':np.append(k.time[0:n_steps-1] - k.time.diff(dim='time')[0] * (n_steps-1),k.time)}) for k in [x_train,x_val,x_test]]
+      
+    return idx_train,idx_val,idx_test,x_train,x_val,x_test,y_train,y_val,y_test
+
+def split_predictand_and_predictors_by_years(predictand,predictors,years,n_steps):
+    '''
+    Split predictand and predictors chronologically.
+    
+    Input:
+        predictand: panda dataframe with predictand timeseries
+        predictors: xarray dataset with predictor data
+        split_fractions: list of fractions in the order [train,test,val]
+        n_steps: number of timesteps at which to use predictors to predict predictand
+    Output:
+        splitted predictor & predictand data
+    '''  
+    idx_train = predictand.loc[predictand['date'].dt.year.isin(years[0])].index
+    idx_val = predictand.loc[predictand['date'].dt.year.isin(years[2])].index
+    idx_test = predictand.loc[predictand['date'].dt.year.isin(years[1])].index
 
     #take predictand splits
     y_train, y_val, y_test = [predictand['surge'].values[k] for k in [idx_train,idx_val,idx_test]]
