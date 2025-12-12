@@ -82,3 +82,27 @@ def relative_entropy(a,t):
         return alpha * kl(true_sm_pos, pred_sm_pos) + (1-alpha) * kl(true_sm_neg, pred_sm_neg)
     
     return loss_fn
+
+def quantile_loss(q):
+    q = tf.constant(q, dtype=tf.float64)
+    
+    def loss_fn(y_obs,y_pred):    
+        return tf.reduce_mean(tf.maximum(q * (y_obs - y_pred), (1-q) * (y_pred - y_obs)))
+    
+    return loss_fn
+
+
+def quantile_loss_huber(q,d=0.1): #from Longo et al. (2025) A Deep Learning Framework for Extreme Storm Surge Modelling Under Future Climate Scenarios
+    q = tf.constant(q, dtype=tf.float64)
+    d = tf.constant(d, dtype=tf.float64)
+    
+    def loss_fn(y_obs,y_pred):    
+        
+        errors = y_obs-y_pred
+        abs_errors = tf.abs(errors)
+        huber_errors = tf.where(abs_errors <= d, 0.5 * tf.square(errors)/d, (abs_errors - 0.5 * d))
+        quantile_loss = tf.maximum(q * huber_errors * (y_obs - y_pred), (1-q) * huber_errors * (y_pred - y_obs)) #essentially multiplies huber loss with quantile loss?
+        
+        return tf.reduce_mean(quantile_loss)
+    
+    return loss_fn
