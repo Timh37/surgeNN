@@ -9,7 +9,7 @@ from surgeNN import io, preprocessing
 from surgeNN.io import train_predict_output_to_ds, setup_output_dirs, add_loss_to_output
 from surgeNN.evaluation import add_error_metrics_to_prediction_ds,rmse
 from surgeNN.models import build_LSTM_stacked, build_ConvLSTM2D_with_channels
-from surgeNN.losses import gevl,exp_negexp_mse,obs_squared_weighted_mse, obs_weighted_mse
+from surgeNN.losses import gevl,exp_negexp_mse,obs_squared_weighted_mse, obs_weighted_mse, quantile_loss, quantile_loss_huber
 from tqdm import tqdm
 import itertools
 import random
@@ -20,7 +20,7 @@ class GC_Callback(tf.keras.callbacks.Callback):
         gc.collect()
         
 def train_and_predict(model_architecture,loss_function,hyperparam_options,
-                      split_fractions,strat_metric,strat_start_month,strat_seed,tgs,n_runs,n_iterations,n_epochs,patience,
+                      split_kwargs,tgs,n_runs,n_iterations,n_epochs,patience,
                       predictor_path,predictor_vars,predictor_degrees,predictand_path,temp_freq,output_dir,store_model):
     '''
     Execute model training and prediction and evaluation on test split. Uses a stratified splitting scheme.
@@ -30,11 +30,10 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
         loss function:       dictionary with a key containing the name of the loss function, and a value containing the loss function (tensorflow default or custom) [DICT: {STR:STR or func}]
         hyperparam_options:  length 10 list of vectors containing options for each hyperparameter in the order: 
                              [[batch_size],[n_steps],[n_layers],[n_layer_units],[n_dense_layers],[n_dense_layer_units],[dropout_rate],[learning_rate],[l1],[dl_alpha]] 
-        split_fractions:     list of split fractions in the order [train,test,val], sum must be 1
-        strat_metric:        metric based on which to stratify years (annual maximum or a percentile) ['amax' OR STR '<float>pct']
-        strat_start_month:   starting month of each year for stratified sampling, from 1 to 12 [int]
-        tgs:                 tide gauges to train for [list]
-        strat_seed:          seed to control randomness in the stratified sampling scheme [int]
+        split_kwargs         dictionary with arguments for splitting:
+                                {'method':'chronological','fractions':[0.6,0.2,0.2]} #fractions: (train,test,val, sum must be 1)
+                                {'method':'stratified','fractions':[0.6,0.2,0.2],'stratification_metric':'amax' OR STR '<float>pct','stratification_start_month':int 1->12,'stratification_seed':int]}
+                                {'method':'by_years','split_years':list(list of train years,list of test years,list of validation years)]}
         n_runs:              number of runs with different hyperparameters to do [int]
         n_iterations:        number of repetitions to run each setting with [int]
         n_epochs:            maximum number of epochs to train with [int]
@@ -67,19 +66,27 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
         
         predictors = io.Predictor(predictor_path)
         predictors.open_dataset(tg,predictor_vars,n_cells)
-        predictors.trim_years(1979,2017)
-        predictors.subtract_annual_means()
-        predictors.deseasonalize()
- 
+       
         predictand = io.Predictand(predictand_path)
         predictand.open_dataset(tg)
-        predictand.trim_dates(predictors.data.time.isel(time=0).values,predictors.data.time.isel(time=-1).values)
+        
+        #determine start and end of overlapping period
+        t_0 = np.max([predictors.data.time.isel(time=0).values,predictand.data.date.values[0]]) 
+        t_end = np.min([predictors.data.time.isel(time=-1).values,predictand.data.date.values[-1]])
+        
+        predictors.trim_dates(t_0,t_end)
+        predictand.trim_dates(t_0,t_end)
+        
+        predictors.subtract_annual_means()
+        predictors.deseasonalize()
+        predictors.load_data()
+
         predictand.deseasonalize()
         predictand.resample_fillna(str(temp_freq)+'h')
-        '''
-        import pandas as pd
-        predictand.data.to_csv('test.csv') #save preprocessed predictand data
-        '''
+        
+        if len(predictors.data.time) != len(predictand.data.date): #check if time series overlap
+            raise Exception('Lengths of preprocessed predictor and predictand data do not agree.')
+        
         ### (2) Configure sets of hyperparameters to run with
         all_settings = list(itertools.product(*hyperparam_options))
         n_settings = len(all_settings)
@@ -101,8 +108,16 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
                 model_input = preprocessing.trainingInput(predictors,predictand)
                 if model_architecture == 'lstm':
                     model_input.stack_predictor_coords()
-                    
-                model_input.split_stratified(split_fractions,this_n_steps,strat_start_month,strat_seed,strat_metric)
+                
+                if split_kwargs['method'].lower()=='chronological':
+                    model_input.split_chronological(split_kwargs['fractions'],this_n_steps)
+                elif split_kwargs['method'].lower()=='stratified':
+                    model_input.split_stratified(split_kwargs['fractions'],this_n_steps,split_kwargs['stratification_start_month'],split_kwargs['stratification_seed'],split_kwargs['stratification_metric'])
+                elif split_kwargs['method'].lower()=='by_years':
+                    model_input.split_by_years(split_kwargs['split_years'],this_n_steps)
+                else:
+                    raise Exception('Split method not recognized.')
+                
                 y_train_mean,y_train_sd = model_input.standardize()
         
                 model_input.compute_denseloss_weights(this_dl_alpha) #generate the Denseloss weights for each split
@@ -110,9 +125,9 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
                 x_train,y_train,w_train = model_input.get_windowed_filtered_np_input('train',this_n_steps) #generate input for neural network model
                 x_val,y_val,w_val       = model_input.get_windowed_filtered_np_input('val',this_n_steps)
                 x_test,y_test,w_test    = model_input.get_windowed_filtered_np_input('test',this_n_steps)
-
+                
                 o_train,o_val,o_test = [model_input.y_train_sd * k + model_input.y_train_mean for k in [y_train,y_val,y_test]] #back-transform observations
-
+              
                 #build model
                 if model_architecture == 'convlstm':
                     model = build_ConvLSTM2D_with_channels(this_n_convlstm, this_n_dense,(np.ones(this_n_convlstm)*this_n_convlstm_units).astype(int), 
@@ -173,15 +188,14 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
             out_ds.attrs['n_epochs'] = n_epochs
             out_ds.attrs['patience'] = patience
             out_ds.attrs['loss_function'] = lf_name
-            out_ds.attrs['split_fractions'] = split_fractions
-            out_ds.attrs['stratification'] = strat_metric+'_'+str(strat_start_month)+'_'+str(strat_seed)
+            out_ds.attrs['split_kwargs'] = str(split_kwargs)
             out_ds.attrs['predictor_vars'] = predictor_vars
             
             my_path = os.path.join(output_dir,'performance',model_architecture)
             my_fn = model_architecture+'_'+str(temp_freq)+'h_'+tg.replace('.csv','')+'_'+lf_name+'_hp1_ndeg'+str(predictor_degrees)+'_it'
             
             out_ds.to_netcdf(os.path.join(my_path,my_fn+str(len(fnmatch.filter(os.listdir(my_path),my_fn+'*')))+'.nc'),mode='w')
-            
+
     return out_ds
 
 
@@ -219,7 +233,7 @@ if __name__ == "__main__":
     predictor_path  = 'gs://leap-persistent/timh37/era5_predictors/3hourly/' #'gs://leap-persistent/timh37/HighResMIP/surgeNN_predictors/'#
     #predictand_path = '/home/jovyan/surgeNN/input/CoDEC_ERA5_at_gesla3_tgs_eu_hourly_anoms.nc'#'/home/jovyan/surgeNN/input/GTSM_HighResMIP_HadGEM3-GC31-HM_at_gesla3_tgs_stretched_3hourly_rounded10min_after2.nc'
     predictand_path = '/home/jovyan/surgeNN/input/t_tide_3h_hourly_deseasoned_predictands'
-    output_dir = '/home/jovyan/surgeNN/results/nns/'
+    output_dir = '/home/jovyan/surgeNN/results/nns/length_tests/default'
     store_model = 0#1 #whether to store the tensorflow models
     temp_freq = 3 # [hours] temporal frequency to use
     
@@ -230,16 +244,16 @@ if __name__ == "__main__":
     n_epochs = 100 #how many training epochs
     patience = 10 #early stopping patience
     loss_function = {'mse':'mse'} # default tensorflow loss function string or string of custom loss function of surgeNN.losses (e.g., 'gevl({gamma})')
+    #loss_function = {'ql':'quantile_loss(.8)'}
     
-    #splitting & stratified sampling
-    split_fractions = [.6,.2,.2] #train, test, val
-    strat_metric = '99pct'
-    strat_start_month = 7
-    strat_seed = 0
-
+    #splitting
+    split_kwargs={'method':'stratified','fractions':[0.6,0.2,0.2],'stratification_metric':'99pct','stratification_start_month':7,'stratification_seed':0}
+    #split_kwargs={'method':'by_years','split_years':[np.arange(1980,2002),np.arange(2010,2019),np.arange(2002,2010)]}
+    
     #hyperparameters:
     #dl_alpha = np.array([0,1,3,5]).astype('int') #defined from command line
    
+    
     batch_size = np.array([128]).astype('int')
     n_steps = np.array([9]).astype('int')
     n_convlstm = np.array([1]).astype('int')
@@ -249,11 +263,23 @@ if __name__ == "__main__":
     dropout = np.array([0.1,0.2])
     lrs = np.array([1e-5,5e-5,1e-4])
     l1s = np.array([0.02])
+    '''
+    batch_size = np.array([128]).astype('int')
+    n_steps = np.array([9]).astype('int')
+    n_convlstm = np.array([1]).astype('int')
+    n_convlstm_units = np.array([32]).astype('int')
+    n_dense = np.array([2]).astype('int')
+    n_dense_units = np.array([32]).astype('int')
+    dropout = np.array([0.1])
+    lrs = np.array([5e-5])
+    l1s = np.array([0.02])
+    '''
     
     hyperparam_options = [batch_size, n_steps, n_convlstm, n_convlstm_units,
                     n_dense, n_dense_units, dropout, lrs, l1s, dl_alpha]
     
     out_ds = train_and_predict(model_architecture,loss_function,hyperparam_options, #execute
-                      split_fractions,strat_metric,strat_start_month,strat_seed,tgs,n_runs,n_iterations,n_epochs,patience,
-                     predictor_path,predictor_vars,predictor_degrees,predictand_path,temp_freq,output_dir,store_model)
+                                   split_kwargs,tgs,n_runs,n_iterations,n_epochs,patience,
+                                   predictor_path,predictor_vars,predictor_degrees,
+                                   predictand_path,temp_freq,output_dir,store_model)
     
