@@ -136,8 +136,8 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
                 elif model_architecture == 'lstm':
                     model = build_LSTM_stacked(this_n_convlstm, this_n_dense,(np.ones(this_n_convlstm)*this_n_convlstm_units).astype(int), 
                                       (np.ones(this_n_dense)*this_n_dense_units).astype(int),(this_n_steps,
-                                                            len(predictors.data.lon_around_tg)**2 * len(predictor_vars)),1,'lstm0',this_dropout, this_lr, lf,l2=this_l2)
-
+                                                            len(predictors.data.lon_around_tg)**2 * len(predictor_vars)),1,'lstm0',this_dropout, this_lr, lf,l2=this_l2,n_vector_inputs=0)
+                
                 #train model:
                 if this_dl_alpha: #if using DenseLoss weights
                     train_history = model.fit(x=x_train,y=y_train,epochs=n_epochs,batch_size=this_batch_size,sample_weight=w_train,validation_data=(x_val,y_val,w_val),
@@ -175,8 +175,12 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
 
             #concatenate across runs & compute statistics
             out_ds = xr.concat(tg_datasets,dim='i',coords='different')
-            out_ds = add_error_metrics_to_prediction_ds(out_ds,[.95,.98,.99,.995],3) #optional third argument 'max_numT_between_isolated_extremes' to exclude extremes isolated by more than n timesteps from another extreme from evaluation (to avoid including extremes mainly due to semi-diurnal tides, see manuscript for more explanation)
-
+            #out_ds = add_error_metrics_to_prediction_ds(out_ds,[.95,.98,.99,.995],3) #old
+            out_ds = add_error_metrics_to_prediction_ds(out_ds,[.95,.98,.99,.995],int(np.floor_divide(12-1,temp_freq))) 
+            #^ optional third argument 'max_numT_between_isolated_extremes' to exclude extremes isolated by more than n timesteps from another extreme from evaluation 
+            #(to avoid including extremes mainly due to semi-diurnal tides, see manuscript for more explanation)
+            
+            
             out_ds = out_ds.assign_coords(lon = ('tg',np.array([predictand.data['lon'].values[0]])))
             out_ds = out_ds.assign_coords(lat = ('tg',np.array([predictand.data['lat'].values[0]])))
 
@@ -195,7 +199,7 @@ def train_and_predict(model_architecture,loss_function,hyperparam_options,
             my_fn = model_architecture+'_'+str(temp_freq)+'h_'+tg.replace('.csv','')+'_'+lf_name+'_hp1_ndeg'+str(predictor_degrees)+'_it'
             
             out_ds.to_netcdf(os.path.join(my_path,my_fn+str(len(fnmatch.filter(os.listdir(my_path),my_fn+'*')))+'.nc'),mode='w')
-
+            
     return out_ds
 
 
@@ -206,10 +210,10 @@ if __name__ == "__main__":
                   'brest-822a-fra-uhslc.csv', 'vigo-vigo-esp-ieo.csv',  'alicante_i_outer_harbour-alio-esp-da_mm.csv'] #all tide gauges to process
     '''
     # --- allow to set specific function arguments using commandline in "execute_train_and_predit.sh"
-    default_tgs = ['den_helder-denhdr-nld-rws.csv'] #set default values
+    default_tgs = ['esbjerg-esb-dnk-dmi.csv'] #set default values
     default_architecture = 'lstm'
     default_alpha = np.array([0,1,3,5]).astype('int')
-    default_n_degrees = 5
+    default_n_degrees = 3
     
     arguments = sys.argv
     if len(arguments)==5: #if specifying tgs, architecture & alpha values from commandline
@@ -227,18 +231,23 @@ if __name__ == "__main__":
     print('Architecture: '+model_architecture+'; dl_alpha: ' + str(dl_alpha))
     # --- 
     
-    #configure standard settings if running main:
+    #for k-fold by_years (temporary?)
+    seed=4 #0-4, 5-fold
+    np.random.seed(seed)
+    shuffled_years = np.arange(1980,2018)
+    np.random.shuffle(shuffled_years)
     
+    #configure standard settings if running main:
     #i/o
-    predictor_path  = 'gs://leap-persistent/timh37/era5_predictors/3hourly/' #'gs://leap-persistent/timh37/HighResMIP/surgeNN_predictors/'#
+    predictor_path  = 'gs://leap-persistent/timh37/era5_predictors/6hourly/' #'gs://leap-persistent/timh37/HighResMIP/surgeNN_predictors/'#
     #predictand_path = '/home/jovyan/surgeNN/input/CoDEC_ERA5_at_gesla3_tgs_eu_hourly_anoms.nc'#'/home/jovyan/surgeNN/input/GTSM_HighResMIP_HadGEM3-GC31-HM_at_gesla3_tgs_stretched_3hourly_rounded10min_after2.nc'
-    predictand_path = '/home/jovyan/surgeNN/input/t_tide_3h_hourly_deseasoned_predictands'
-    output_dir = '/home/jovyan/surgeNN/results/nns/length_tests/default'
+    predictand_path = '/home/jovyan/surgeNN/input/t_tide_6h_hourly_deseasoned_predictands'
+    output_dir = '/home/jovyan/surgeNN/results/nns/6hourly/by_years/1980_2017_seed'+str(seed)
     store_model = 0#1 #whether to store the tensorflow models
-    temp_freq = 3 # [hours] temporal frequency to use
+    temp_freq = 6 # [hours] temporal frequency to use
     
     #training
-    predictor_vars = ['msl','u10','v10','w'] #variables to use
+    predictor_vars = ['msl','u10','v10'] #variables to use
     n_runs = 24 #how many hyperparameter combinations to run
     n_iterations = 1 #how many iterations to run per hyperparameter combination
     n_epochs = 100 #how many training epochs
@@ -247,13 +256,13 @@ if __name__ == "__main__":
     #loss_function = {'ql':'quantile_loss(.8)'}
     
     #splitting
-    split_kwargs={'method':'stratified','fractions':[0.6,0.2,0.2],'stratification_metric':'99pct','stratification_start_month':7,'stratification_seed':0}
-    #split_kwargs={'method':'by_years','split_years':[np.arange(1980,2002),np.arange(2010,2019),np.arange(2002,2010)]}
+    #split_kwargs={'method':'stratified','fractions':[0.6,0.2,0.2],'stratification_metric':'99pct','stratification_start_month':7,'stratification_seed':0}
+    split_kwargs={'method':'by_years','split_years':[shuffled_years[0:22],shuffled_years[22:30],shuffled_years[30:38]]}
     
     #hyperparameters:
     #dl_alpha = np.array([0,1,3,5]).astype('int') #defined from command line
    
-    
+    ''' settings for NHESS paper
     batch_size = np.array([128]).astype('int')
     n_steps = np.array([9]).astype('int')
     n_convlstm = np.array([1]).astype('int')
@@ -265,7 +274,7 @@ if __name__ == "__main__":
     l1s = np.array([0.02])
     '''
     batch_size = np.array([128]).astype('int')
-    n_steps = np.array([9]).astype('int')
+    n_steps = np.array([5]).astype('int')
     n_convlstm = np.array([1]).astype('int')
     n_convlstm_units = np.array([32]).astype('int')
     n_dense = np.array([2]).astype('int')
@@ -273,7 +282,7 @@ if __name__ == "__main__":
     dropout = np.array([0.1])
     lrs = np.array([5e-5])
     l1s = np.array([0.02])
-    '''
+    
     
     hyperparam_options = [batch_size, n_steps, n_convlstm, n_convlstm_units,
                     n_dense, n_dense_units, dropout, lrs, l1s, dl_alpha]
