@@ -132,6 +132,8 @@ def open_predictand(path,tg):
     if path.endswith('.nc'):
         predictand = xr.open_dataset(path).sel(tg=tg)
         predictand = predictand.rename({'time':'date'})
+        if 'tide' in predictand:
+            predictand = predictand.rename({'tide':'surge'})
         predictand = predictand.to_pandas().reset_index()[['surge','date','lon','lat']]
 
     elif os.path.isdir(path):
