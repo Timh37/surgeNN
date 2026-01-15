@@ -6,24 +6,66 @@ Created on Fri Jan 19 16:16:55 2024
 @author: timhermans
 """
 import tensorflow as tf
-from tensorflow.keras.layers import Layer
-from tensorflow.keras import backend as K
 import keras
 from keras import regularizers
 from keras import layers
-from keras.layers import Input, Concatenate, Conv2D, Flatten, Dense, MaxPooling2D, MaxPooling3D,Dropout, SpatialDropout2D,SpatialDropout3D,BatchNormalization, ConvLSTM2D
-from keras.models import Model
-from keras import regularizers
 from sklearn.decomposition import PCA
 import statsmodels.api as sm
 import numpy as np
-import xarray as xr
 
 #lstm models ---->
-def build_LSTM_stacked(n_lstm, n_dense, n_lstm_units, n_neurons,
-                     n_timesteps,n_lats,n_lons,n_predictor_variables, 
+def build_LSTM_stacked(n_lstm, n_dense, n_lstm_units, n_neurons,predictor_shape,n_output,model_name, dropout_rate, lr, loss_function,l2=0.01,n_vector_inputs=0):
+    '''build an LSTM network where predictor variables are inputted as features
+    
+    Input:
+        n_lstm: number of lstm layers
+        n_dense: number of dense layers
+        n_lstm_unis: list of number of units per lstm layer
+        n_neurons: list of number of neurons per dense layer
+        predictor_shape: shape of predictor data (n_leading_timesteps,n_predictors)
+        model_name: tensorflow model name
+        dropout_rate: dropout rate
+        lr: learning rate
+        loss_function: loss function to use
+        l2: regularization rate
+        n_vector_inputs: number of additional input vectors directly going into densely connected layers
+    Output:
+        compiled tensorflow model
+    '''
+    lstm_input = keras.Input(shape=predictor_shape)
+    x = lstm_input
+    for l in np.arange(n_lstm-1):
+        x = layers.LSTM(n_lstm_units[l], return_sequences=True)(x)  
+    x = layers.LSTM(n_lstm_units[n_lstm-1], return_sequences=False)(x)  
+    x_ = x
+
+    vector_inputs = []
+    
+    if n_vector_inputs>0:
+        for n in np.arange(n_vector_inputs):
+            vector_inputs.append(keras.Input(shape=(1)))    
+        x_ = layers.concatenate([x_]+vector_inputs)    
+
+    #add densely connected layers:
+    for l in np.arange(n_dense-1):
+        x_ = layers.Dense(n_neurons[l],activation='relu',activity_regularizer=regularizers.l2(l2))(x_)
+        x_ = layers.Dropout((dropout_rate))(x_)
+    x_ = layers.Dense(n_neurons[n_dense-1],activation='relu',activity_regularizer=regularizers.l2(l2))(x_)
+    x_ = layers.Dropout((dropout_rate))(x_)   
+    
+    outputs = []
+    for k in np.arange(n_output):
+        outputs.append(layers.Dense(1,activation='linear',dtype='float64')(x_))
+
+    model = keras.Model(inputs=[lstm_input]+vector_inputs, outputs=outputs,name=model_name)  #construct the Keras model   
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate=lr),loss=loss_function,weighted_metrics=[]) #compile the model
+    return model
+
+    
+def build_LSTM_stacked_multioutput_static(n_lstm, n_dense, n_lstm_units, n_neurons,
+                     predictor_shape,n_output,n_static,
                      model_name, dropout_rate, lr, loss_function,l2=0.01):
-    '''build an LSTM network where predictor variables are inputted as channels
+    '''build an LSTM network where predictor variables are inputted as features
     
     Input:
         n_lstm: number of lstm layers
@@ -39,9 +81,12 @@ def build_LSTM_stacked(n_lstm, n_dense, n_lstm_units, n_neurons,
     Output:
         compiled tensorflow model
     '''
-    input_shape = (n_timesteps,n_lats*n_lons*n_predictor_variables) #channels last
+    lstm_input = keras.Input(shape=predictor_shape)
     
-    lstm_input = keras.Input(shape=input_shape)
+    static_inputs = []
+    for k in np.arange(n_output):
+        static_inputs.append(keras.Input(shape=(n_static)))
+    
     x = lstm_input
     for l in np.arange(n_lstm-1):
         x = layers.LSTM(n_lstm_units[l], return_sequences=True)(x)  
@@ -54,10 +99,69 @@ def build_LSTM_stacked(n_lstm, n_dense, n_lstm_units, n_neurons,
     x = layers.Dense(n_neurons[n_dense-1],activation='relu',activity_regularizer=regularizers.l2(l2))(x)
     x = layers.Dropout((dropout_rate))(x)   
     
-    output = layers.Dense(1,activation='linear',dtype='float64')(x)
+    outputs = []
+    for k in np.arange(n_output):
+        static = layers.Dense(n_neurons[n_dense-1],activation='relu',activity_regularizer=regularizers.l2(l2))(static_inputs[k])
+        static_and_x = layers.concatenate((x,static))
+        
+        x_k = layers.Dense(n_neurons[n_dense-1],activation='linear',dtype='float64')(static_and_x)
+        
+        outputs.append(layers.Dense(1,activation='linear',dtype='float64')(x_k))
 
-    model = keras.Model(inputs=lstm_input, outputs=output,name=model_name)  #construct the Keras model   
+    model = keras.Model(inputs=[lstm_input]+static_inputs, outputs=outputs,name=model_name)  #construct the Keras model   
     model.compile(optimizer=keras.optimizers.Adam(learning_rate=lr),loss=loss_function,weighted_metrics=[]) #compile the model
+    return model
+
+def build_LSTM_stacked_multioutput_cond(n_lstm, n_dense, n_lstm_units, n_neurons,
+                     predictor_shape,n_static_cond,n_output,
+                     model_name, dropout_rate, lr, loss_function,l2=0.01):
+    '''build an LSTM network where predictor variables are inputted as features
+    
+    Input:
+        n_lstm: number of lstm layers
+        n_dense: number of dense layers
+        n_lstm_unis: list of number of units per lstm layer
+        n_neurons: list of number of neurons per dense layer
+        n_timesteps,n_lats,n_lons,n_predictor_variables: number of timesteps, latitude, longitude grid cells and predictor variables used
+        model_name: tensorflow model name
+        dropout_rate: dropout rate
+        lr: learning rate
+        loss_function: loss function to use
+        l2: regularization rate
+    Output:
+        compiled tensorflow model
+    '''
+    from cond_rnn import ConditionalRecurrent
+    
+    cond_input = keras.Input(shape=(n_static_cond))
+    lstm_input = keras.Input(shape=predictor_shape)
+    
+    x = lstm_input
+    for l in np.arange(n_lstm-1):
+        if l==0:
+            x = ConditionalRecurrent(layers.LSTM(n_lstm_units[l], return_sequences=True))([x,cond_input])  
+        else:
+            x = layers.LSTM(n_lstm_units[l], return_sequences=True)(x) 
+            
+    if n_lstm==1:
+        x = ConditionalRecurrent(layers.LSTM(n_lstm_units[n_lstm-1], return_sequences=False))([x,cond_input])  
+    else:
+        x = layers.LSTM(n_lstm_units[n_lstm-1], return_sequences=False)(x)  
+    
+    #add densely connected layers:
+    for l in np.arange(n_dense-1):
+        x = layers.Dense(n_neurons[l],activation='relu',activity_regularizer=regularizers.l2(l2))(x)
+        x = layers.Dropout((dropout_rate))(x)
+    x = layers.Dense(n_neurons[n_dense-1],activation='relu',activity_regularizer=regularizers.l2(l2))(x)
+    x = layers.Dropout((dropout_rate))(x)   
+    
+    outputs = []
+    for k in np.arange(n_output):
+        outputs.append(layers.Dense(1,activation='linear',dtype='float64')(x))
+
+    model = keras.Model(inputs=[lstm_input,cond_input], outputs=outputs,name=model_name)  #construct the Keras model   
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate=lr),loss=loss_function,weighted_metrics=[]) #compile the model
+    
     return model
 
 def build_LSTM_per_variable(n_lstm, n_dense, n_lstm_units, n_neurons,
@@ -115,8 +219,8 @@ def build_LSTM_per_variable(n_lstm, n_dense, n_lstm_units, n_neurons,
 
 #convlstm models ---->
 def build_ConvLSTM2D_with_channels(n_convlstm, n_dense, n_kernels, n_neurons,
-                     n_timesteps,n_lats,n_lons,n_predictor_variables, 
-                     model_name, dropout_rate, lr, loss_function,l2=0.01):
+                     n_timesteps,n_lats,n_lons,n_predictor_variables,n_output, 
+                     model_name, dropout_rate, lr, loss_function,l2=0.01,n_vector_inputs=0):
     '''build a convolutional LSTM network where predictor variables are inputted as channels
     
     Input:
@@ -148,16 +252,27 @@ def build_ConvLSTM2D_with_channels(n_convlstm, n_dense, n_kernels, n_neurons,
     x = layers.MaxPooling2D(pool_size=(2,2),padding="same")(x)        
     #x = SpatialDropout2D(dropout_rate)(x)
     x = layers.Flatten()(x)
+    x_ = x
+
+    vector_inputs = []
+    
+    if n_vector_inputs>0:
+        for n in np.arange(n_vector_inputs):
+            vector_inputs.append(keras.Input(shape=(1)))    
+        x_ = layers.concatenate([x_]+vector_inputs)    
         
     #add densely connected layers:
     for l in np.arange(n_dense-1):
-        x = layers.Dense(n_neurons[l],activation='relu',activity_regularizer=regularizers.l2(l2))(x)
-        x = layers.Dropout((dropout_rate))(x)
-    x = layers.Dense(n_neurons[n_dense-1],activation='relu',activity_regularizer=regularizers.l2(l2))(x)
-    x = layers.Dropout((dropout_rate))(x)   
+        x_ = layers.Dense(n_neurons[l],activation='relu',activity_regularizer=regularizers.l2(l2))(x_)
+        x_ = layers.Dropout((dropout_rate))(x_)
+    x_ = layers.Dense(n_neurons[n_dense-1],activation='relu',activity_regularizer=regularizers.l2(l2))(x_)
+    x_ = layers.Dropout((dropout_rate))(x_)   
     
-    output = layers.Dense(1,activation='linear',dtype='float64')(x)
-    model = keras.Model(inputs=cnn_input, outputs=output,name=model_name)  #construct the Keras model   
+    outputs = []
+    for k in np.arange(n_output):
+        outputs.append(layers.Dense(1,activation='linear',dtype='float64')(x_))
+        
+    model = keras.Model(inputs=[cnn_input]+vector_inputs, outputs=outputs,name=model_name)  #construct the Keras model   
     model.compile(optimizer=keras.optimizers.Adam(learning_rate=lr),loss=loss_function,metrics=['accuracy']) #compile the model
     
     return model
@@ -321,72 +436,9 @@ def build_Conv3D_with_channels(n_conv, n_dense, n_kernels, n_neurons,
     return model
 #<----
 
-
-#Sequential convolutional lstm ---->
-def build_Conv2D_then_LSTM_with_channels(n_conv,n_lstm, n_dense, 
-                           n_kernels, n_lstm_units, n_neurons,
-                             n_steps,n_lats,n_lons,n_predictor_variables, 
-                             model_name, dropout_rate, lr, loss_function,l2=0.01): #to-do
-    
-    '''build a convolutional then LSTM network where predictor variables are inputted as channels
-    
-    Input:
-        n_conv: number of conv2d layers
-        n_lstm: number of lstm layers
-        n_dense: number of dense layers
-        n_kernels: list of number of kernels per conv layer
-        n_lstm_units: list of number of units per lstm layer
-        n_neurons: list of number of neurons per dense layer
-        n_timesteps,n_lats,n_lons,n_predictor_variables: number of timesteps, latitude, longitude grid cells and predictor variables used
-        model_name: tensorflow model name
-        dropout_rate: dropout rate
-        lr: learning rate
-        loss_function: loss function to use
-        l2: regularization rate
-    Output:
-        compiled tensorflow model
-    '''
-    input_shape = (n_steps,n_lats,n_lons, n_predictor_variables)
-    all_input = keras.Input(shape=input_shape)
-    input_per_timestep = tf.unstack(all_input,axis=1)
-    
-    convoluted_steps = []
-    for step_input in input_per_timestep: #for each predictor input variable, apply convolution:
-        #cnn_input = keras.Input(shape=input_shape)
-        x=step_input
-        for l in np.arange(n_conv):
-            x = layers.Conv2D(n_kernels[l], kernel_size=(3, 3), padding='same', activation='relu')(x)        
-            x = layers.BatchNormalization()(x)
-            x = layers.MaxPooling2D(pool_size=(2, 2), padding="same")(x)
-        
-        #x = SpatialDropout2D(dropout_rate)(x)
-        x = layers.Flatten()(x)
-        
-        convoluted_steps.append(x)
-    
-    lstm_input = tf.stack(convoluted_steps,axis=1)
-    x_ = lstm_input
-    
-    for l in np.arange(n_lstm-1):
-        x_ = layers.LSTM(n_lstm_units[l], return_sequences=True)(x_)        
-        
-    x_ = layers.LSTM(n_lstm_units[n_lstm-1], return_sequences=False)(x_)
-        
-    xd = x_
-    #add densely connected layers:
-    for l in np.arange(n_dense-1):
-        xd = layers.Dense(n_neurons[l],activation='relu',activity_regularizer=regularizers.l2(l2))(xd)
-        xd = layers.Dropout((dropout_rate))(xd)
-        
-    xd = layers.Dense(n_neurons[n_dense-1],activation='relu',activity_regularizer=regularizers.l2(l2))(xd)
-    xd = layers.Dropout((dropout_rate))(xd)   
-    output = layers.Dense(1,activation='linear',dtype='float64')(xd)
-    
-    model = keras.Model(inputs=all_input, outputs=output,name=model_name)  #construct the Keras model   
-    model.compile(optimizer=keras.optimizers.Adam(learning_rate=lr),loss=loss_function,metrics=['accuracy']) #compile the model
-    return model
-
 '''#from elsewhere, not currently using this:
+from tensorflow.keras.layers import Layer
+from tensorflow.keras import backend as K
 class Attention(Layer): 
     def __init__(self, return_sequences=True):
         self.return_sequences = return_sequences
@@ -425,20 +477,23 @@ def train_gssr_mlr(predictors,predictand):
     
     return est.params,pca.components_
 
-def predict_gssr_mlr(predictors,mlr_coefs,training_components,grid_size_around_tgs,predictor_vars,n_steps):
+def predict_gssr_mlr(predictors,mlr_coefs,training_components,predictor_vars,n_steps):
     pca = PCA(len(mlr_coefs[np.isfinite(mlr_coefs)])-1) #get same number of pcs as used for regression coefficient estimation
     pca.fit(predictors)
     X_pca = pca.transform(predictors)
-
-    #sign check of the components
     prediction_components = pca.components_
-
-    #find pressure indices in predictor matrix
-    n_gridcells = grid_size_around_tgs**2
     
+    #sign check of the PCA components using pressure
+    if 'msl' not in predictor_vars:
+        raise Exception('No pressure ("msl") in predictor variables, cannot check the sign of the prediction PCA components against the trained PCA components.')
+    
+    #find pressure indices in predictor component matrix
+    i_msl = np.where(np.array(predictor_vars)=='msl')[0][0] #where is "msl" in the list of predictor variables
+    n_gridcells = int(prediction_components.shape[-1]/(n_steps*len(predictor_vars))) #total number of grid cells
+
     p_idx = []
     for k in np.arange(n_steps):
-        p_idx.append(np.arange(0,n_gridcells)+k*len(predictor_vars)*n_gridcells)
+        p_idx.append(np.arange(0,n_gridcells)+k*len(predictor_vars)*n_gridcells + i_msl * n_gridcells)
     p_idx = np.hstack(p_idx)
 
     #compute rmses of pressure indices
@@ -448,7 +503,6 @@ def predict_gssr_mlr(predictors,mlr_coefs,training_components,grid_size_around_t
     s = (rmses<rmses_flipped).astype('int') #flip pcs if rmse of flipped pc is lower
     s[s==0]=-1
     X_pca = X_pca * s
-
 
     prediction = np.sum(mlr_coefs * np.column_stack((np.ones(X_pca.shape[0]),X_pca)),axis=1)
     

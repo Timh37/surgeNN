@@ -5,8 +5,8 @@ import xarray as xr
 import tensorflow as tf
 import itertools
 from scipy import signal 
-
-
+import pandas as pd
+import datetime as dt
 class trainingInput():
     def __init__(self, predictors,predictand):
         self.predictors = predictors.data.copy(deep=True)
@@ -126,6 +126,7 @@ def split_predictand_and_predictors_chronological(predictand,predictors,split_fr
       
     return idx_train,idx_val,idx_test,x_train,x_val,x_test,y_train,y_val,y_test
 
+#to-do: set first n timesteps of each year to nan in case preceding timesteps in preceding year not included in split?
 def split_predictand_and_predictors_by_years(predictand,predictors,years,n_steps):
     '''
     Split predictand and predictors chronologically.
@@ -144,14 +145,15 @@ def split_predictand_and_predictors_by_years(predictand,predictors,years,n_steps
 
     #take predictand splits
     y_train, y_val, y_test = [predictand['surge'].values[k] for k in [idx_train,idx_val,idx_test]]
-    
+    t_train, t_val, t_test = [predictand['date'].values[k] for k in [idx_train,idx_val,idx_test]]
     #set first n_steps observations in each split to NaN to avoid leakage:
     y_train[0:n_steps-1] = np.nan #predictors not available at t<0
     y_val[0:n_steps-1] = np.nan #to avoid leakage
     y_test[0:n_steps-1] = np.nan #to avoid leakage
 
     #take predictor splits
-    x_train, x_val, x_test = [ predictors.sel(time=slice(predictand['date'].values[k[0]],predictand['date'].values[k[-1]])) for k in [idx_train,idx_val,idx_test]]
+    #x_train, x_val, x_test = [ predictors.sel(time=slice(predictand['date'].values[k[0]],predictand['date'].values[k[-1]])) for k in [idx_train,idx_val,idx_test]]
+    x_train, x_val, x_test = [ predictors.sel(time=k) for k in [t_train,t_val,t_test]]
     
     if n_steps>1: #prepend nan data to the n-1 steps before the first timestep that predictor data is available to be able to predict y at t_split=0
         x_train,x_val,x_test = [k.reindex({'time':np.append(k.time[0:n_steps-1] - k.time.diff(dim='time')[0] * (n_steps-1),k.time)}) for k in [x_train,x_val,x_test]]
@@ -457,6 +459,35 @@ def bandstop_filter_hourly_predictand(predictand,attenuation,f1,f2,order):
 
     return predictand_ffill
 
+def stretch_highresmip_calendar(ds,ndays_per_model_year=365):
+    '''
+    Stretch time calendar of HighResMIP dataset according to method used by Muis et al. (2023) (Deltares) to derive forcing for GTSM.
+    '''
+    ref_time = dt.datetime(ds.time[0].dt.year.values,ds.time[0].dt.month.values,ds.time[0].dt.day.values,ds.time[0].dt.hour.values) #1950-01-01 00:00:00
+
+    time = ds.time.values
+    hours_since_ref = (ds.time-ds.time[0]).values/np.timedelta64(1, 'h')
+    
+    #loop over timesteps
+    new_times=[]
+    for t,this_time in enumerate(time):
+        this_yr = this_time.year
+        num_days_in_this_yr = pd.Timestamp(this_yr, 12, 31).dayofyear
+
+        fraction_of_model_yr = hours_since_ref[t]/24 - ndays_per_model_year * (this_yr - ref_time.year) #fraction of 360days
+
+        if fraction_of_model_yr == 0:
+            new_time = dt.datetime(this_yr,1,1)
+        elif 0 < fraction_of_model_yr < ndays_per_model_year:
+            new_time = dt.datetime(this_yr,1,1) + dt.timedelta(days=num_days_in_this_yr/ndays_per_model_year * fraction_of_model_yr) #stretch
+        else:
+            raise Exception('this should not happen')
+        new_times.append(new_time)
+
+    stretched_time_ds = ds.copy(deep=True)
+    stretched_time_ds['time'] = new_times
+    stretched_time_ds['time'] = stretched_time_ds['time'].dt.ceil('H')
+    return stretched_time_ds
 '''
 #Tensorflow pipeline for loading in batches:
 
